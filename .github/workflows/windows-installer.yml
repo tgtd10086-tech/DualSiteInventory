@@ -23,10 +23,10 @@ jobs:
       - name: Locate project
         shell: pwsh
         run: |
-          $files = @(Get-ChildItem -Path . -Recurse -Filter build_installer.py -File | Where-Object { $_.FullName -match 'v0_4' })
-          if ($files.Count -ne 1) { throw "Expected exactly one v0_4 project, found $($files.Count)" }
+          $files = @(Get-ChildItem -Path . -Recurse -Filter build_installer.py -File | Where-Object { $_.FullName -match 'v0_5' })
+          if ($files.Count -ne 1) { throw "Expected exactly one v0_5 project, found $($files.Count)" }
           $appDir = $files[0].Directory.FullName
-          Write-Host "Building version v0.4 from $appDir"
+          Write-Host "Building version v0.5 from $appDir"
           "APP_DIR=$appDir" >> $env:GITHUB_ENV
 
 
