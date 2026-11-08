@@ -52,19 +52,28 @@ jobs:
           choco install innosetup -y --no-progress
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      
       - name: Create Setup EXE
         shell: pwsh
         run: |
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { throw "Inno Setup not found" }
-          New-Item -ItemType Directory -Force -Path "$env:APP_DIR\release" | Out-Null
-          & $iscc "$env:APP_DIR\installer\DualSite.iss"
+
+          New-Item -ItemType Directory -Force -Path "C:\ds\installer", "C:\ds\release" | Out-Null
+
+          robocopy "$env:APP_DIR\dist\DualSiteInventory" "C:\ds\dist\DualSiteInventory" /E
+          if ($LASTEXITCODE -ge 8) { throw "File copy failed" }
+
+          Copy-Item "$env:APP_DIR\installer\DualSite.iss" "C:\ds\installer\DualSite.iss" -Force
+
+          & $iscc "C:\ds\installer\DualSite.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: DualSiteInventory-Windows-Setup
-          path: '**/release/DualSiteInventory_Setup*.exe'
+          path: 'C:/ds/release/DualSiteInventory_Setup*.exe'
           if-no-files-found: error
 
