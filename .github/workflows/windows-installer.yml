@@ -18,13 +18,16 @@ jobs:
           python-version: '3.12'
           architecture: 'x64'
 
+      
       - name: Locate project
         shell: pwsh
         run: |
-          $file = Get-ChildItem -Path . -Recurse -Filter build_installer.py -File | Select-Object -First 1
-          if (!$file) { throw "build_installer.py not found" }
-          $appDir = $file.Directory.FullName
+          $files = @(Get-ChildItem -Path . -Recurse -Filter build_installer.py -File | Where-Object { $_.FullName -match 'v0_3' })
+          if ($files.Count -ne 1) { throw "Expected exactly one v0_3 project, found $($files.Count)" }
+          $appDir = $files[0].Directory.FullName
+          Write-Host "Building version v0.3 from $appDir"
           "APP_DIR=$appDir" >> $env:GITHUB_ENV
+
 
       - name: Install dependencies
         shell: pwsh
