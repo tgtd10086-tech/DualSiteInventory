@@ -57,6 +57,7 @@ jobs:
         run: |
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { throw "Inno Setup not found" }
+          New-Item -ItemType Directory -Force -Path "$env:APP_DIR\release" | Out-Null
           & $iscc "$env:APP_DIR\installer\DualSite.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
