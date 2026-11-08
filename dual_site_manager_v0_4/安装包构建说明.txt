@@ -1,0 +1,15 @@
+双站商品管理中心 v0.2 —— Windows 安装包构建工程
+
+注意：此 ZIP 不是可双击安装的 EXE！它含完整 v0.2 源码、Windows 打包配置和自动化构建脚本。
+当前非 Windows 环境无法编译或验证 Setup.exe，所以不能声称已交付完整安装包。
+
+如果需要在 Windows 上构建：
+1. 需 Python 3.12、联网下载依赖、Inno Setup 6。
+2. 安装 requirements.txt 所需依赖。
+3. 运行 python build_installer.py。
+4. 用 Inno Setup 编译 installer/DualSite.iss。
+5. 安装包生成到 release/DualSiteInventory_Setup_v0.2.0.exe。
+
+如使用 GitHub Actions：将 dual_site_manager_v0_2 文件夹（连同其上层路径）上传到仓库根目录，保留 .github/workflows/windows-installer.yml 的相对位置；GitHub 识别工作流要求把 .github 文件夹放在仓库根目录。运行 Build Windows installer 工作流，完成后下载构建产物。工作流本身尚未实机执行验证。
+
+说明：这是 v0.2 测试版，自动定时采集、全站发现和 Telegram 发布仍未完成。
