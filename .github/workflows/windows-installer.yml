@@ -1,42 +1,30 @@
-
 name: Build Windows installer
-
 on:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
-
       - name: Install Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           architecture: 'x64'
-
-      
-      
       - name: Locate project
         shell: pwsh
         run: |
-          $files = @(Get-ChildItem -Path . -Recurse -Filter build_installer.py -File | Where-Object { $_.FullName -match 'v0_7' })
-          if ($files.Count -ne 1) { throw "Expected exactly one v0_7 project, found $($files.Count)" }
-          $appDir = $files[0].Directory.FullName
-          Write-Host "Building version v0.7 from $appDir"
-          "APP_DIR=$appDir" >> $env:GITHUB_ENV
-
-
-
+          $files = @(Get-ChildItem -Path . -Recurse -Filter build_installer.py -File | Where-Object { $_.FullName -match 'v1_0_dev1' })
+          if ($files.Count -ne 1) { throw "Expected one v1.0-dev1 project, got $($files.Count)" }
+          "APP_DIR=$($files[0].Directory.FullName)" >> $env:GITHUB_ENV
       - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r "$env:APP_DIR\requirements.txt"
-
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run tests
         shell: pwsh
         run: |
@@ -44,41 +32,30 @@ jobs:
           python -m unittest discover -s tests -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
-
       - name: Build Windows application
         shell: pwsh
         run: |
           python "$env:APP_DIR\build_installer.py"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       - name: Install Inno Setup
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      
       - name: Create Setup EXE
         shell: pwsh
         run: |
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { throw "Inno Setup not found" }
-
           New-Item -ItemType Directory -Force -Path "C:\ds\installer", "C:\ds\release" | Out-Null
-
           robocopy "$env:APP_DIR\dist\DualSiteInventory" "C:\ds\dist\DualSiteInventory" /E
           if ($LASTEXITCODE -ge 8) { throw "File copy failed" }
-
           Copy-Item "$env:APP_DIR\installer\DualSite.iss" "C:\ds\installer\DualSite.iss" -Force
-
           & $iscc "C:\ds\installer\DualSite.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: DualSiteInventory-Windows-Setup
           path: 'C:/ds/release/DualSiteInventory_Setup*.exe'
           if-no-files-found: error
-
