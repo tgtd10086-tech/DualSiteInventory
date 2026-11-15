@@ -1,0 +1,4 @@
+source,external_id,name,price_usd,stock,variant,url
+FB1314,8031,演示商品 A,2.70,283,,https://fb1314.com/goods/8031.html
+CEOACC,1001,演示商品 B,4.20,120,美国,
+CEOACC,1001,演示商品 B,4.50,30,日本,
