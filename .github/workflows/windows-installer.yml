@@ -83,14 +83,22 @@ jobs:
           choco install innosetup -y --no-progress
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      
       - name: Prepare installer files
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $source = "$env:APP_DIR\dist\DualSiteInventory"
           $stage = "C:\ds\dist\DualSiteInventory"
 
-          New-Item -ItemType Directory -Force -Path `
-            "C:\ds\dist", "C:\ds\release" | Out-Null
+          Write-Host "Preparing installer staging directory"
+
+          if (!(Test-Path "$source\DualSiteInventory.exe")) {
+            throw "Source EXE missing"
+          }
+
+          New-Item -ItemType Directory -Force -Path "C:\ds\release" | Out-Null
 
           if (Test-Path "C:\ds\dist") {
             Remove-Item "C:\ds\dist" -Recurse -Force
@@ -98,28 +106,49 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
+          Write-Host "Copying application files"
+
           robocopy $source $stage /E /COPY:DAT /R:2 /W:2
-          if ($LASTEXITCODE -ge 8) {
-            throw "Application staging copy failed: $LASTEXITCODE"
+          $copyExit = $LASTEXITCODE
+
+          Write-Host "Robocopy exit code: $copyExit"
+
+          if ($copyExit -ge 8) {
+            throw "Application staging copy failed: $copyExit"
           }
 
-          $exe = Join-Path $stage "DualSiteInventory.exe"
-          $playwright = Join-Path $stage "_internal\playwright"
+          # Robocopy codes 0-7 are successful.
+          # Reset native exit code so GitHub Actions does not
+          # mistake a successful copy (code 1) for a failed step.
+          $global:LASTEXITCODE = 0
 
-          if (!(Test-Path $exe -PathType Leaf)) {
+          Write-Host "Verifying staged application"
+
+          if (!(Test-Path "$stage\DualSiteInventory.exe" -PathType Leaf)) {
             throw "Staged EXE missing"
           }
 
-          if (!(Test-Path $playwright -PathType Container)) {
-            throw "Staged Playwright files missing"
+          if (!(Test-Path "$stage\_internal\playwright" -PathType Container)) {
+            throw "Staged Playwright directory missing"
           }
 
           $count = @(Get-ChildItem $stage -Recurse -File).Count
+
           Write-Host "Staged files: $count"
+
+          if ($count -ne 1845) {
+            Write-Host "Notice: staged file count differs from previous build."
+          }
 
           if ($count -eq 0) {
             throw "Staged application is empty"
           }
+
+          $global:LASTEXITCODE = 0
+
+          Write-Host "Installer preparation completed successfully"
+          exit 0
+
 
       - name: Compile installer
         shell: pwsh
