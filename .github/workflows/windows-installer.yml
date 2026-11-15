@@ -29,7 +29,7 @@ jobs:
           }
 
           $appDir = $files[0].Directory.FullName
-          Write-Host "Building BlackBoxShop v2.0 from $appDir"
+          Write-Host "Project: $appDir"
           "APP_DIR=$appDir" >> $env:GITHUB_ENV
 
       - name: Install dependencies
@@ -53,30 +53,106 @@ jobs:
           python "$env:APP_DIR\build_installer.py"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify application bundle
+        shell: pwsh
+        run: |
+          $dist = "$env:APP_DIR\dist\DualSiteInventory"
+          $exe = Join-Path $dist "DualSiteInventory.exe"
+          $playwright = Join-Path $dist "_internal\playwright"
+
+          if (!(Test-Path $exe -PathType Leaf)) {
+            throw "Application EXE missing: $exe"
+          }
+
+          if (!(Test-Path $playwright -PathType Container)) {
+            throw "Playwright bundle missing: $playwright"
+          }
+
+          $files = @(Get-ChildItem $dist -Recurse -File)
+          if ($files.Count -eq 0) {
+            throw "Application bundle is empty"
+          }
+
+          Write-Host "EXE verified"
+          Write-Host "Playwright verified"
+          Write-Host "Bundle files: $($files.Count)"
+
       - name: Install Inno Setup
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Create Setup EXE
+      - name: Prepare installer files
+        shell: pwsh
+        run: |
+          $source = "$env:APP_DIR\dist\DualSiteInventory"
+          $stage = "C:\ds\dist\DualSiteInventory"
+
+          New-Item -ItemType Directory -Force -Path `
+            "C:\ds\dist", "C:\ds\release" | Out-Null
+
+          if (Test-Path "C:\ds\dist") {
+            Remove-Item "C:\ds\dist" -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          robocopy $source $stage /E /COPY:DAT /R:2 /W:2
+          if ($LASTEXITCODE -ge 8) {
+            throw "Application staging copy failed: $LASTEXITCODE"
+          }
+
+          $exe = Join-Path $stage "DualSiteInventory.exe"
+          $playwright = Join-Path $stage "_internal\playwright"
+
+          if (!(Test-Path $exe -PathType Leaf)) {
+            throw "Staged EXE missing"
+          }
+
+          if (!(Test-Path $playwright -PathType Container)) {
+            throw "Staged Playwright files missing"
+          }
+
+          $count = @(Get-ChildItem $stage -Recurse -File).Count
+          Write-Host "Staged files: $count"
+
+          if ($count -eq 0) {
+            throw "Staged application is empty"
+          }
+
+      - name: Compile installer
         shell: pwsh
         run: |
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          $iss = "$env:APP_DIR\installer\DualSite.iss"
+          $output = "C:\ds\release\BlackBoxShop_Setup_v2.0.0.exe"
+
           if (!(Test-Path $iscc)) {
-            throw "Inno Setup not found"
+            throw "Inno Setup compiler missing"
           }
 
-          $release = Join-Path $env:APP_DIR "release"
-          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          if (!(Test-Path $iss)) {
+            throw "Installer script missing: $iss"
+          }
 
-          & $iscc "/DMyAppOutputDir=$release" "$env:APP_DIR\installer\DualSite.iss"
+          & $iscc $iss
 
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup compilation failed: $LASTEXITCODE"
+          }
+
+          if (!(Test-Path $output -PathType Leaf)) {
+            throw "Installer EXE was not generated: $output"
+          }
+
+          $size = (Get-Item $output).Length
+          Write-Host "Installer created: $output"
+          Write-Host "Installer size: $size bytes"
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v5
         with:
           name: BlackBoxShop-v2.0-Windows-Setup
-          path: '**/release/DualSiteInventory_Setup_v2.0.0.exe'
+          path: 'C:/ds/release/BlackBoxShop_Setup_v2.0.0.exe'
           if-no-files-found: error
