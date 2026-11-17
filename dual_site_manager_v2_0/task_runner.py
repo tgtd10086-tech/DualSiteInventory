@@ -6,6 +6,17 @@ from site_discovery import scan_site, discover_site_categories
 from image_render import render_project
 from telegram_sender import send_photo, unprotect_token
 
+
+def scan_result_complete(stats, stop=None):
+    """A scan is publishable only when every completeness signal is clean."""
+    return bool(
+        stats.get('listed', 0) > 0
+        and not stats.get('truncated', False)
+        and stats.get('failed', 0) == 0
+        and stats.get('incomplete_cards', 0) == 0
+        and not (stop and stop.is_set())
+    )
+
 def execute(job,db_path,settings,progress=None,stop=None):
     store=Store(db_path)
     root=Path(settings['data_dir']).parent
@@ -24,12 +35,16 @@ def execute(job,db_path,settings,progress=None,stop=None):
                 max_pages=int(settings.get('scan_limit',1200)),
                 headed=bool(settings.get('visible_browser',True)),
                 selected_categories=selected,progress=progress,stop=stop)
-            complete=not stats['truncated'] and stats['listed']>0 and stats['failed']==0
+            complete=scan_result_complete(stats,stop)
             written=store.ingest_category_scan(source,items,selected,complete,len(failed),
                                                 '；'.join(failed[:12]))
             if not complete:
-                return f'{source} 扫描不完整：识别 {stats["listed"]} 件，异常 {len(failed)}，正式数据库未更新。详情见诊断文件。'
-            return f'{source} 已更新 {written} 件；本次覆盖启用类目 {len(selected)} 个，异常 {len(failed)}。'
+                # Surface incomplete scans as failed scheduled runs so the job history
+                # records the error and operators do not mistake it for a successful cycle.
+                raise RuntimeError(f'{source} 扫描不完整：识别 {stats["listed"]} 件，异常页面 {len(failed)}，待核实商品卡 {stats.get("incomplete_cards",0)}；正式数据库及库存快照未更新。诊断报告：{stats.get('diagnostic_report','')}')
+            report=stats.get('diagnostic_report','')
+            return (f'{source} 已更新 {written} 件；本次覆盖启用类目 {len(selected)} 个，异常 {len(failed)}。'
+                    f'本次仅代表公开可见列表扫描结果，不代表网站隐藏/登录态库存完整。诊断报告：{report}')
         if job['kind'] in ('capture','publish'):
             pid=job['project_id'];rows=store.project_products(pid)
             if not rows:raise ValueError('项目没有商品，不能发布')
@@ -43,14 +58,26 @@ def execute(job,db_path,settings,progress=None,stop=None):
             if job['kind']=='capture':return f'成功生成 {len(paths)} 张报价图：{paths[0]}'
             token=unprotect_token(settings.get('tg_token_encrypted',''))
             if not token:raise ValueError('没有保存 Telegram Bot Token')
-            messages=[]
+            # Resume multi-page publication safely after a partial Telegram failure.
+            import uuid
+            scheduled=job.get('next_run')
+            batch_key=(f"job:{job.get('id')}:{scheduled}" if job.get('id') and scheduled
+                       else f"manual:{uuid.uuid4().hex}")
+            messages=[];skipped=[]
             for i,path in enumerate(paths):
+                if store.publish_page_done(batch_key,i):
+                    skipped.append(i+1)
+                    continue
                 caption=job['caption'] if i==0 else f'{name["name"]}（续 {i+1}/{len(paths)}）'
-                msg=send_photo(token,job['target'],path,caption)
-                messages.append(msg)
-            with store.conn:
-                store.conn.execute('INSERT INTO publish_log(project_id,target,created_at,status,detail) VALUES(?,?,?,?,?)',
-                    (pid,job['target'],__import__('core').now(),'success',str(messages)))
-            return f'成功发送 {len(messages)} 张图片，消息ID {messages}'
+                try:
+                    msg=send_photo(token,job['target'],path,caption)
+                    store.record_publish_page(pid,job['target'],batch_key,i,'success',
+                        detail='Telegram 已确认发送',job_id=job.get('id'),message_id=msg)
+                    messages.append(msg)
+                except Exception as exc:
+                    store.record_publish_page(pid,job['target'],batch_key,i,'failed',
+                        detail=str(exc),job_id=job.get('id'))
+                    raise RuntimeError(f'第 {i+1}/{len(paths)} 张图片发送失败；此前成功页已记录，重试时会跳过成功页：{exc}') from exc
+            return f'发布完成：共 {len(paths)} 页；本次发送 {len(messages)} 页；跳过已成功页 {len(skipped)} 页；消息ID {messages}'
         raise ValueError('未知任务类型')
     finally:store.close()

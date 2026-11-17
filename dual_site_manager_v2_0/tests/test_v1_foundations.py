@@ -67,6 +67,75 @@ class FoundationTests(unittest.TestCase):
         self.store.set_project_periods(proj,['7d'])
         self.assertEqual(self.store.get_project_periods(proj),('7d',))
         with self.assertRaises(ValueError):self.store.set_project_periods(proj,['7d','30d'])
+    def test_sales_window_supports_configured_six_hour_cadence(self):
+        self.store.ingest_category_scan('CEOACC',[self.item('cadence')],{self.ca},True)
+        pid=self.store.products()[0]['id']
+        end=datetime.now().astimezone().replace(minute=0,second=0,microsecond=0)
+        points=[]
+        for hours_ago,stock in [(30,100),(24,95),(18,90),(12,80),(6,75),(0,70)]:
+            points.append((end-timedelta(hours=hours_ago),stock))
+        with self.store.conn:
+            self.store.conn.execute('DELETE FROM snapshots WHERE product_id=?',(pid,))
+            previous=None
+            for captured,stock in points:
+                delta=None if previous is None else stock-previous
+                self.store.conn.execute('INSERT INTO snapshots(product_id,captured_at,raw_usd,stock,stock_delta,price_delta,note) VALUES(?,?,?,?,?,?,?)',
+                    (pid,captured.isoformat(),'0.63',stock,delta,None,'test'))
+                previous=stock
+        result=self.store.sales_windows(pid,when=end)
+        self.assertEqual(result['24h'],25)
+
+    def test_sales_window_rejects_long_internal_collection_gap(self):
+        self.store.ingest_category_scan('CEOACC',[self.item('gap')],{self.ca},True)
+        pid=self.store.products()[0]['id']
+        end=datetime.now().astimezone().replace(microsecond=0)
+        points=[(end-timedelta(hours=30),100),(end-timedelta(hours=2),70)]
+        with self.store.conn:
+            self.store.conn.execute('DELETE FROM snapshots WHERE product_id=?',(pid,))
+            for captured,stock,delta in [(points[0][0],100,None),(points[1][0],70,-30)]:
+                self.store.conn.execute('INSERT INTO snapshots(product_id,captured_at,raw_usd,stock,stock_delta,price_delta,note) VALUES(?,?,?,?,?,?,?)',
+                    (pid,captured.isoformat(),'0.63',stock,delta,None,'test'))
+        result=self.store.sales_windows(pid,when=end)
+        self.assertIsNone(result['24h'])
+
+
+    def _replace_history(self, product_id, points):
+        with self.store.conn:
+            self.store.conn.execute('DELETE FROM snapshots WHERE product_id=?',(product_id,))
+            previous=None
+            for captured,stock in points:
+                delta=None if previous is None else stock-previous
+                self.store.conn.execute('INSERT INTO snapshots(product_id,captured_at,raw_usd,stock,stock_delta,price_delta,note) VALUES(?,?,?,?,?,?,?)',
+                    (product_id,captured.isoformat(),'0.63',stock,delta,None,'test'))
+                previous=stock
+
+    def test_sales_window_supports_24_hour_cadence(self):
+        self.store.ingest_category_scan('CEOACC',[self.item('daily')],{self.ca},True)
+        pid=self.store.products()[0]['id']
+        end=datetime.now().astimezone().replace(minute=0,second=0,microsecond=0)
+        points=[(end-timedelta(hours=h),stock) for h,stock in [(48,100),(24,90),(0,80)]]
+        self._replace_history(pid,points)
+        self.assertEqual(self.store.sales_windows(pid,when=end)['24h'],10)
+
+    def test_sales_window_excludes_delta_crossing_window_start(self):
+        self.store.ingest_category_scan('CEOACC',[self.item('boundary')],{self.ca},True)
+        pid=self.store.products()[0]['id']
+        end=datetime.now().astimezone().replace(minute=0,second=0,microsecond=0)
+        # The -20 interval crosses the 24h boundary and must not be assigned wholly
+        # to the requested window. Only the following -5 interval is countable.
+        points=[(end-timedelta(hours=30),100),(end-timedelta(hours=18),80),(end-timedelta(hours=6),75),(end,70)]
+        self._replace_history(pid,points)
+        self.assertEqual(self.store.sales_windows(pid,when=end)['24h'],10)
+
+    def test_sales_window_rejects_gap_larger_than_sampling_tolerance(self):
+        self.store.ingest_category_scan('CEOACC',[self.item('outage')],{self.ca},True)
+        pid=self.store.products()[0]['id']
+        end=datetime.now().astimezone().replace(minute=0,second=0,microsecond=0)
+        points=[(end-timedelta(hours=72),120),(end-timedelta(hours=48),110),
+                (end-timedelta(hours=18),90),(end-timedelta(hours=2),80)]
+        self._replace_history(pid,points)
+        self.assertIsNone(self.store.sales_windows(pid,when=end)['24h'])
+
     def test_product_exclusion_is_respected(self):
         self.store.ingest_category_scan('CEOACC',[self.item('1')],{self.ca},True)
         pid=self.store.products()[0]['id'];self.store.set_status([pid],'excluded')

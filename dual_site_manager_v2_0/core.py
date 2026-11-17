@@ -91,12 +91,16 @@ class Store:
             'products': [('display_name','TEXT'),('display_usd','TEXT'),('product_type',"TEXT NOT NULL DEFAULT '其他'")],
             'project_products': [('custom_name','TEXT'),('include_in_capture','INTEGER NOT NULL DEFAULT 1')],
             'projects': [('sales_periods',"TEXT NOT NULL DEFAULT '24h'"),('sort_mode',"TEXT NOT NULL DEFAULT 'manual'"),('include_out_of_stock','INTEGER NOT NULL DEFAULT 1')],
-            'automation_jobs': [('daily_times',"TEXT NOT NULL DEFAULT ''")]
+            'automation_jobs': [('daily_times',"TEXT NOT NULL DEFAULT ''"),('claim_token','TEXT'),('claimed_until','REAL')],
+            'publish_log': [('job_id','INTEGER'),('batch_key','TEXT'),('page_index','INTEGER'),('message_id','TEXT')]
         }.items():
             existing={r['name'] for r in self.conn.execute(f'PRAGMA table_info({table})')}
             for col, typ in columns:
                 if col not in existing:
                     self.conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} {typ}')
+        # A successful page is unique within a scheduled publish batch. This
+        # makes retries resume after the last confirmed Telegram message.
+        self.conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_publish_batch_page ON publish_log(batch_key,page_index) WHERE batch_key IS NOT NULL AND page_index IS NOT NULL')
         # Normalize legacy multi-select screenshot periods to their first valid choice.
         self.conn.execute("UPDATE projects SET sales_periods=CASE WHEN instr(sales_periods, ',')>0 THEN substr(sales_periods,1,instr(sales_periods, ',')-1) ELSE sales_periods END")
         self.conn.commit()
@@ -222,24 +226,49 @@ class Store:
         return len(ids)
 
     def products_for_management(self, source='', membership='all', search='', product_type='', sort='updated_desc', limit=5000, offset=0):
-        # Sortable product list; membership is computed from project links, not scrape status.
-        orders={'updated_desc':'p.updated_at DESC,p.id DESC','name_asc':'p.name COLLATE NOCASE ASC,p.id','name_desc':'p.name COLLATE NOCASE DESC,p.id','price_asc':'CAST(p.raw_usd AS REAL) ASC,p.id','price_desc':'CAST(p.raw_usd AS REAL) DESC,p.id','stock_asc':'p.stock ASC,p.id','stock_desc':'p.stock DESC,p.id','type_asc':'p.product_type COLLATE NOCASE ASC,p.id','sales_24h':'sales24 DESC,p.id','sales_7d':'sales7 DESC,p.id','sales_30d':'sales30 DESC,p.id'}
-        order=orders.get(sort,orders['updated_desc']); where=[]; params=[]
+        """Management view with sales values from the same conservative window algorithm.
+
+        Sales sorts are performed in Python because SQL's old fixed 3-hour freshness
+        shortcut incorrectly hid valid 6/12/24-hour schedules and ignored internal gaps.
+        """
+        orders={
+            'updated_desc':'p.updated_at DESC,p.id DESC',
+            'name_asc':'p.name COLLATE NOCASE ASC,p.id',
+            'name_desc':'p.name COLLATE NOCASE DESC,p.id',
+            'price_asc':'CAST(p.raw_usd AS REAL) ASC,p.id',
+            'price_desc':'CAST(p.raw_usd AS REAL) DESC,p.id',
+            'stock_asc':'p.stock ASC,p.id',
+            'stock_desc':'p.stock DESC,p.id',
+            'type_asc':'p.product_type COLLATE NOCASE ASC,p.id'
+        }
+        where=[]; params=[]
         if source: where.append('p.source=?'); params.append(source)
         if product_type: where.append('p.product_type=?'); params.append(product_type)
         if search:
-            where.append('(p.name LIKE ? OR p.external_id LIKE ? OR COALESCE(p.display_name,'') LIKE ?)'); params.extend(['%'+search+'%']*3)
+            where.append('(p.name LIKE ? OR p.external_id LIKE ? OR COALESCE(p.display_name,'') LIKE ?)')
+            params.extend(['%'+search+'%']*3)
         if membership=='pending': where.append("p.status!='excluded' AND NOT EXISTS(SELECT 1 FROM project_products pp WHERE pp.product_id=p.id)")
         elif membership=='assigned': where.append("p.status!='excluded' AND EXISTS(SELECT 1 FROM project_products pp WHERE pp.product_id=p.id)")
         elif membership=='excluded': where.append("p.status='excluded'")
         sql=("SELECT p.*, EXISTS(SELECT 1 FROM project_products pp WHERE pp.product_id=p.id) AS is_assigned, "
-             "(SELECT GROUP_CONCAT(pr.name,'、') FROM project_products pp JOIN projects pr ON pr.id=pp.project_id WHERE pp.product_id=p.id) AS project_names, "
-             "(SELECT CASE WHEN julianday((SELECT MIN(s0.captured_at) FROM snapshots s0 WHERE s0.product_id=p.id))<=julianday('now','-1 day') AND julianday((SELECT MAX(s1.captured_at) FROM snapshots s1 WHERE s1.product_id=p.id))>=julianday('now','-3 hours') THEN COALESCE(SUM(CASE WHEN s.stock_delta<0 THEN -s.stock_delta ELSE 0 END),0) ELSE NULL END FROM snapshots s WHERE s.product_id=p.id AND julianday(s.captured_at)>=julianday('now','-1 day')) AS sales24, "
-             "(SELECT CASE WHEN julianday((SELECT MIN(s0.captured_at) FROM snapshots s0 WHERE s0.product_id=p.id))<=julianday('now','-7 day') AND julianday((SELECT MAX(s1.captured_at) FROM snapshots s1 WHERE s1.product_id=p.id))>=julianday('now','-3 hours') THEN COALESCE(SUM(CASE WHEN s.stock_delta<0 THEN -s.stock_delta ELSE 0 END),0) ELSE NULL END FROM snapshots s WHERE s.product_id=p.id AND julianday(s.captured_at)>=julianday('now','-7 day')) AS sales7, "
-             "(SELECT CASE WHEN julianday((SELECT MIN(s0.captured_at) FROM snapshots s0 WHERE s0.product_id=p.id))<=julianday('now','-30 day') AND julianday((SELECT MAX(s1.captured_at) FROM snapshots s1 WHERE s1.product_id=p.id))>=julianday('now','-3 hours') THEN COALESCE(SUM(CASE WHEN s.stock_delta<0 THEN -s.stock_delta ELSE 0 END),0) ELSE NULL END FROM snapshots s WHERE s.product_id=p.id AND julianday(s.captured_at)>=julianday('now','-30 day')) AS sales30 FROM products p")
+             "(SELECT GROUP_CONCAT(pr.name,'、') FROM project_products pp JOIN projects pr ON pr.id=pp.project_id WHERE pp.product_id=p.id) AS project_names FROM products p")
         if where: sql+=' WHERE '+' AND '.join(where)
-        sql+=f' ORDER BY {order} LIMIT ? OFFSET ?'; params.extend([int(limit),int(offset)])
-        return self.conn.execute(sql,params).fetchall()
+        if sort in ('sales_24h','sales_7d','sales_30d'):
+            # Need the full filtered candidate set before sorting by calculated sales.
+            rows=[dict(r) for r in self.conn.execute(sql,params).fetchall()]
+            key={'sales_24h':'24h','sales_7d':'7d','sales_30d':'30d'}[sort]
+            for row in rows:
+                windows=self.sales_windows(row['id'])
+                row.update(sales24=windows['24h'],sales7=windows['7d'],sales30=windows['30d'])
+            field={'24h':'sales24','7d':'sales7','30d':'sales30'}[key]
+            rows.sort(key=lambda r:(r[field] is None, -(r[field] or 0), r['id']))
+            return rows[int(offset):int(offset)+int(limit)]
+        sql+=' ORDER BY '+orders.get(sort,orders['updated_desc'])+' LIMIT ? OFFSET ?'
+        rows=[dict(r) for r in self.conn.execute(sql,params+[int(limit),int(offset)]).fetchall()]
+        for row in rows:
+            windows=self.sales_windows(row['id'])
+            row.update(sales24=windows['24h'],sales7=windows['7d'],sales30=windows['30d'])
+        return rows
 
     def management_counts(self):
         return self.conn.execute("SELECT COUNT(*) total, SUM(CASE WHEN status='excluded' THEN 1 ELSE 0 END) excluded, SUM(CASE WHEN status!='excluded' AND NOT EXISTS(SELECT 1 FROM project_products pp WHERE pp.product_id=products.id) THEN 1 ELSE 0 END) pending, SUM(CASE WHEN status!='excluded' AND EXISTS(SELECT 1 FROM project_products pp WHERE pp.product_id=products.id) THEN 1 ELSE 0 END) assigned FROM products").fetchone()
@@ -330,14 +359,70 @@ class Store:
     def jobs(self):
         return self.conn.execute('SELECT * FROM automation_jobs ORDER BY id').fetchall()
 
+    def claim_due_job(self, lease_seconds=43200):
+        """Atomically claim one due job so two app instances cannot run it twice.
+
+        Claims expire after a conservative lease if the process crashes. A successful
+        or failed completion clears the claim in mark_job().
+        """
+        import time, uuid
+        current=time.time()
+        token=uuid.uuid4().hex
+        self.conn.execute('BEGIN IMMEDIATE')
+        try:
+            row=self.conn.execute("""SELECT * FROM automation_jobs
+                WHERE enabled=1 AND next_run<=?
+                  AND (claim_token IS NULL OR claimed_until IS NULL OR claimed_until<=?)
+                ORDER BY next_run,id LIMIT 1""",(current,current)).fetchone()
+            if not row:
+                self.conn.commit()
+                return None
+            cur=self.conn.execute("""UPDATE automation_jobs
+                SET claim_token=?,claimed_until=?
+                WHERE id=? AND (claim_token IS NULL OR claimed_until IS NULL OR claimed_until<=?)""",
+                (token,current+max(60,int(lease_seconds)),row['id'],current))
+            if cur.rowcount != 1:
+                self.conn.rollback()
+                return None
+            claimed=dict(row)
+            claimed['claim_token']=token
+            claimed['claimed_until']=current+max(60,int(lease_seconds))
+            self.conn.commit()
+            return claimed
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def release_job_claim(self,job_id,claim_token):
+        with self.conn:
+            self.conn.execute("UPDATE automation_jobs SET claim_token=NULL,claimed_until=NULL WHERE id=? AND claim_token=?",
+                              (int(job_id),str(claim_token)))
+
     def mark_job(self,job_id,error=''):
         import time
         job=self.conn.execute('SELECT daily_times,interval_minutes FROM automation_jobs WHERE id=?',(job_id,)).fetchone()
         if not job:return
         next_run=self.next_daily_run(job['daily_times']) if job['daily_times'] else time.time()+job['interval_minutes']*60
         with self.conn:
-            self.conn.execute('UPDATE automation_jobs SET last_run=?,last_error=?,next_run=? WHERE id=?',
+            self.conn.execute('UPDATE automation_jobs SET last_run=?,last_error=?,next_run=?,claim_token=NULL,claimed_until=NULL WHERE id=?',
                 (now(),str(error)[:1000],next_run,job_id))
+
+    def publish_page_done(self, batch_key, page_index):
+        row=self.conn.execute("SELECT status FROM publish_log WHERE batch_key=? AND page_index=?",
+                              (str(batch_key),int(page_index))).fetchone()
+        return bool(row and row['status']=='success')
+
+    def record_publish_page(self, project_id, target, batch_key, page_index,
+                            status, detail='', job_id=None, message_id=None):
+        with self.conn:
+            self.conn.execute("""INSERT INTO publish_log
+                (project_id,target,created_at,status,detail,job_id,batch_key,page_index,message_id)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(batch_key,page_index) WHERE batch_key IS NOT NULL AND page_index IS NOT NULL
+                DO UPDATE SET created_at=excluded.created_at,status=excluded.status,
+                    detail=excluded.detail,message_id=excluded.message_id""",
+                (project_id,target,now(),status,str(detail)[:2000],job_id,str(batch_key),
+                 int(page_index),str(message_id) if message_id is not None else None))
 
     def delete_job(self,job_id):
         with self.conn:self.conn.execute('DELETE FROM automation_jobs WHERE id=?',(job_id,))
@@ -423,26 +508,58 @@ class Store:
         return written
 
     def sales_windows(self, product_id, when=None):
-        """Observed negative inventory deltas, NOT orders. Reject incomplete history.
-        Returns None when history cannot cover full requested period.
+        """Conservative rolling stock-depletion estimates, never order counts.
+
+        A stock delta belongs to the interval between two snapshots. For a rolling
+        window, the first interval crossing the start boundary is excluded because
+        its decline cannot be allocated precisely inside/outside that window.
+        Missing or excessively spaced observations return None, not zero.
         """
         end=when or datetime.now().astimezone()
-        rows=self.conn.execute('SELECT captured_at,stock,stock_delta FROM snapshots WHERE product_id=? ORDER BY captured_at,id',
-                               (int(product_id),)).fetchall()
-        if not rows:return {'24h':None,'7d':None,'30d':None}
+        if end.tzinfo is None:
+            end=end.astimezone()
+        rows=self.conn.execute(
+            'SELECT captured_at,stock,stock_delta FROM snapshots WHERE product_id=? ORDER BY captured_at,id',
+            (int(product_id),)).fetchall()
+        if len(rows)<2:
+            return {'24h':None,'7d':None,'30d':None}
+        parsed=[]
+        for row in rows:
+            try:
+                captured=datetime.fromisoformat(row['captured_at'])
+                if captured.tzinfo is None: captured=captured.astimezone()
+                captured=captured.astimezone(end.tzinfo)
+            except (TypeError,ValueError):
+                continue
+            parsed.append((captured,row['stock_delta']))
+        parsed.sort(key=lambda x:x[0])
+        intervals=[(b[0]-a[0]).total_seconds()/3600 for a,b in zip(parsed,parsed[1:])
+                   if b[0]>a[0] and (b[0]-a[0])<=timedelta(days=3)]
+        if not intervals:
+            return {'24h':None,'7d':None,'30d':None}
+        cadence=sorted(intervals)[len(intervals)//2]
+        # Permit normal jitter for 1-24h schedules, but reject a missed cycle/outage.
+        allowed_gap=timedelta(hours=min(27.0,max(2.0,cadence*1.8)))
         result={}
         for label,days in [('24h',1),('7d',7),('30d',30)]:
             start=end-timedelta(days=days)
-            try:
-                times=[datetime.fromisoformat(r['captured_at']) for r in rows]
-            except ValueError:
-                result[label]=None;continue
-            # First observation must precede the window boundary, last one must
-            # be reasonably recent; otherwise do not present an authoritative period.
-            if times[0]>start or times[-1]<end-timedelta(hours=3):
-                result[label]=None;continue
-            result[label]=sum(max(0,-int(r['stock_delta'])) for r,t in zip(rows,times)
-                              if t>=start and t<=end and r['stock_delta'] is not None)
+            before=[t for t,_ in parsed if t<=start]
+            after=[t for t,_ in parsed if t>=end-allowed_gap]
+            if not before or not after:
+                result[label]=None; continue
+            baseline=before[-1]
+            if start-baseline>allowed_gap or end-after[-1]>allowed_gap:
+                result[label]=None; continue
+            # Validate every observation interval covering the requested period.
+            relevant=[(t,d) for t,d in parsed if t>=baseline and t<=end]
+            if len(relevant)<2 or any((b[0]-a[0])>allowed_gap for a,b in zip(relevant,relevant[1:])):
+                result[label]=None; continue
+            # Exclude the boundary-crossing delta (baseline -> first point after start).
+            total=0
+            for (prev_t,_),(cur_t,delta) in zip(relevant,relevant[1:]):
+                if prev_t>=start and cur_t<=end and delta is not None:
+                    total+=max(0,-int(delta))
+            result[label]=total
         return result
 
     def project_sales(self,project_id):

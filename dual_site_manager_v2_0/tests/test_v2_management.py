@@ -39,6 +39,15 @@ class V2ManagementTests(unittest.TestCase):
         rows=self.store.products_for_management(membership='pending',sort='price_desc')
         self.assertEqual(rows[0]['external_id'],'2')
         self.assertEqual(self.store.management_counts()['pending'],2)
+
+    def test_management_sales_sort_uses_conservative_sales_window(self):
+        # No sufficient history means the management table must return None,
+        # rather than inventing zero sales or sorting by a stale fixed 3h rule.
+        rows=self.store.products_for_management(sort='sales_24h')
+        self.assertEqual(len(rows),2)
+        self.assertTrue(all(row['sales24'] is None for row in rows))
+        self.assertTrue(all('sales7' in row and 'sales30' in row for row in rows))
+
     def test_project_remove_does_not_delete_product(self):
         self.store.add_project('项目');pid=self.store.projects()[0]['id'];product=self.ids['1']
         self.store.project_assign(pid,[product]);self.store.project_remove(pid,[product])

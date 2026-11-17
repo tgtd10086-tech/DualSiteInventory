@@ -1,5 +1,5 @@
-﻿#define MyAppName "BlackBoxShop"
-#define MyAppVersion "2.0.0"
+#define MyAppName "BlackBoxShop"
+#define MyAppVersion "2.1.4"
 #define MyAppExeName "DualSiteInventory.exe"
 
 [Setup]
@@ -8,8 +8,8 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 DefaultDirName={localappdata}\Programs\BlackBoxShop
 DefaultGroupName={#MyAppName}
-OutputDir=C:\ds\release
-OutputBaseFilename=BlackBoxShop_Setup_v2.0.0
+OutputDir=C:\b\release
+OutputBaseFilename=BlackBoxShop_Setup_v2.1.4
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -19,7 +19,7 @@ UninstallDisplayName={#MyAppName}
 DisableProgramGroupPage=yes
 
 [Files]
-Source: "C:\ds\dist\DualSiteInventory\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "C:\b\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autodesktop}\黑盒铺子"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon

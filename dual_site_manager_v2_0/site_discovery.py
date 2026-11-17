@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urljoin, urldefrag, urlparse
 import re
 import time
+import json
 from browser_collect import ALLOWED, dismiss_site_popup
 
 ROOTS = {'FB1314': 'https://fb1314.com/', 'CEOACC': 'https://ceoacc.com/'}
@@ -125,7 +126,15 @@ def parse_listing_cards(source, data, page_url):
             if not stock:stock=re.search(r'^\s*(?:剩余|库存)?\s*[:：]?\s*(\d[\d,]*)\s*$',cells[1])
             if not price:price=MONEY.search(cells[2])
         if not price or not stock:
-            incomplete+=1;continue
+            # A heading or navigation label is not necessarily a product card.
+            # Count it as incomplete only when the candidate has product identity
+            # (link/data ID) or explicit inventory/price evidence; this avoids
+            # rejecting every scan because unrelated page headings were selected.
+            product_evidence = bool(c.get('href') or c.get('id') or MONEY.search(text) or STOCK.search(text)
+                                    or any(MONEY.search(str(cell)) or STOCK.search(str(cell)) for cell in cells))
+            if product_evidence:
+                incomplete+=1
+            continue
         link=canonical_url(source,c.get('href') or '',page_url) if c.get('href') else None
         item_id=stable_id(source,name,link,c.get('id'))
         try:quantity=int(stock.group(1).replace(',',''))
@@ -173,6 +182,42 @@ def should_finish_scroll(no_new_rounds, at_bottom, end_hint, any_valid, rounds):
     return False, False
 
 
+
+def wait_for_catalogue_signal(page, timeout_ms=9000):
+    """Wait adaptively for visible catalogue evidence or an explicit empty/end hint.
+
+    Avoids a fixed long sleep on fast pages while giving client-rendered catalogues
+    time to hydrate. This does not treat an empty page as a successful scan.
+    """
+    signal = r"""() => {
+      const text=(document.body?.innerText||'');
+      const money=/(?:USD\s*\$?\s*|\$\s*)\d+(?:\.\d{1,4})?/i.test(text);
+      const stock=/(?:库存|现货|存货|剩余|stock|inventory)\s*[:：]?\s*\d/i.test(text);
+      const rows=document.querySelectorAll('tbody tr,[data-product-id],[data-goods-id],.product-card,.goods-item,.product-item').length;
+      const end=/(已经到底|没有更多商品|没有更多了|已加载全部|no more (?:items|products)|end of (?:the )?list)/i.test(text);
+      return (money && stock && rows>0) || end;
+    }"""
+    try:
+        page.wait_for_function(signal, timeout=timeout_ms)
+        return True
+    except Exception:
+        return False
+
+
+def write_scan_diagnostic(diag_dir, source, stats, errors, visited_pages, product_count):
+    """Persist a compact, privacy-conscious scan report; never stores cookies or full HTML."""
+    from datetime import datetime
+    stamp=datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    path=Path(diag_dir)/f'scan_report_{stamp}.json'
+    report={
+        'source':source, 'created_at':datetime.now().astimezone().isoformat(timespec='seconds'),
+        'stats':stats, 'product_count':int(product_count),
+        'visited_pages':visited_pages, 'errors':list(errors[:100]),
+        'note':'Coverage describes visible public catalogue pages only; it is not a guarantee of private or login-restricted inventory.'
+    }
+    path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+    return str(path)
+
 def scroll_catalogue(page, source, url, max_scrolls=90, delay_ms=650, progress=None, stop=None,
                      time_budget_s=120):
     """Read while scrolling and stop on stable growth or a safety limit.
@@ -213,6 +258,37 @@ def scroll_catalogue(page, source, url, max_scrolls=90, delay_ms=650, progress=N
                                  'stop_reason':reason,'elapsed_s':round(time.monotonic()-start,2)}
 
 
+def pagination_links(page, source, base):
+    """Return same-site catalogue pagination URLs without following product links.
+
+    Only explicit pagination controls are accepted: rel=next, aria-labelled
+    next controls, or anchors inside known pagination containers.
+    """
+    js = """els => els.map(a => ({
+      href:a.getAttribute('href'), text:(a.innerText||'').trim(),
+      rel:(a.getAttribute('rel')||'').toLowerCase(),
+      aria:(a.getAttribute('aria-label')||'').toLowerCase(),
+      cls:(a.className||'').toString().toLowerCase(),
+      parent:(a.parentElement?.className||'').toString().toLowerCase()
+    }))"""
+    rows = page.locator('a[href]').evaluate_all(js)
+    result=[]; seen=set()
+    for row in rows:
+        href=row.get('href') or ''
+        marker=' '.join((row.get('rel',''),row.get('aria',''),row.get('cls',''),row.get('parent','')))
+        text=row.get('text','').strip().lower()
+        explicit_next = 'next' in marker or text in {'下一页','下页','›','»','>','next'}
+        pagination_context = any(token in marker for token in ('pagination','pager','page-item','pages'))
+        numbered = bool(re.fullmatch(r'\d{1,5}', text)) and pagination_context
+        if not (explicit_next or numbered):
+            continue
+        target=canonical_url(source, href, base) if href else None
+        if not target or target in seen or is_detail(source,target):
+            continue
+        result.append(target);seen.add(target)
+    return result
+
+
 def category_links(page,source,base):
     """Only publicly linked catalogue/category pages; explicitly exclude details."""
     data=page.locator('a[href]').evaluate_all('''els => els.map(e=>({href:e.getAttribute('href'),text:(e.innerText||'').trim()}))''')
@@ -247,7 +323,9 @@ def scan_site(source,profiles_dir,diagnosis_dir,max_pages=120,headed=True,stop=N
     seeds=sorted(selected_categories) if selected_categories is not None else [root]
     queue=deque(seeds);queued=set(seeds);seen_pages=set();products={};errors=[]
     stats={'source':source,'visited':0,'listed':0,'incomplete_cards':0,'scroll_rounds':0,
-           'failed':0,'truncated':False,'coverage':'unverified','detail_visits':0}
+           'failed':0,'truncated':False,'coverage':'unverified','detail_visits':0,
+           'category_pages_found':0,'pagination_pages_found':0}
+    visited_pages=[]
     with sync_playwright() as p:
         context=p.chromium.launch_persistent_context(user_data_dir=str(profile),headless=not headed,
                     viewport={'width':1280,'height':900},locale='zh-CN',accept_downloads=False)
@@ -262,14 +340,20 @@ def scan_site(source,profiles_dir,diagnosis_dir,max_pages=120,headed=True,stop=N
                 try:
                     page.goto(url,wait_until='domcontentloaded',timeout=35000)
                     dismiss_site_popup(page,source)
-                    # Public catalogue is client-rendered; DOMContentLoaded alone is too early.
-                    page.wait_for_timeout(900)
+                    # Adaptive wait for client-rendered lists; do not rely on networkidle
+                    # because storefronts may keep analytics/polling requests open.
+                    wait_for_catalogue_signal(page, timeout_ms=9000)
                     if urlparse(page.url).hostname not in ALLOWED[source]:raise RuntimeError('跳转到非本站页面')
                     title=page.title()
                     if re.search(r'captcha|cloudflare|verify you are human|安全验证',title,re.I):
                         raise RuntimeError('遇到安全验证，请人工处理')
                     # Gather catalogue category links before scrolling/DOM re-render.
                     links=category_links(page,source,page.url)
+                    pages=pagination_links(page,source,page.url)
+                    stats['category_pages_found'] += len(links)
+                    stats['pagination_pages_found'] += len(pages)
+                    visited_pages.append({'url':page.url,'title':title,'category_links':len(links),
+                                          'pagination_links':len(pages)})
                     def scroll_report(event):
                         if progress:
                             progress({**stats, **event, 'visited':stats['visited'],
@@ -306,11 +390,17 @@ def scan_site(source,profiles_dir,diagnosis_dir,max_pages=120,headed=True,stop=N
                                 json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
                         except Exception:pass
                         errors.append(f'{url}: 页面已加载但未找到可确认的商品名称、USD价格和数字库存；已保存诊断')
-                    if selected_categories is None and stats['visited']<max_pages:
-                        for link in links:
+                    if stats['visited']<max_pages:
+                        # Follow explicit pagination in both full-site and selected-category scans.
+                        # Selected mode still never discovers unrelated categories.
+                        for link in pages:
                             if link not in queued and link not in seen_pages:
                                 queue.append(link);queued.add(link)
-                    if progress:progress({**stats,'stage':'本页读取完成','current_url':url,'queued':len(queue)})
+                        if selected_categories is None:
+                            for link in links:
+                                if link not in queued and link not in seen_pages:
+                                    queue.append(link);queued.add(link)
+                    if progress:progress({**stats,'stage':'本页读取完成','current_url':url,'queued':len(queue),'pagination_found':len(pages)})
                 except Exception as exc:
                     stats['failed']+=1;errors.append(f'{url}: {exc}')
                     if stats['failed']<=12:
@@ -318,10 +408,15 @@ def scan_site(source,profiles_dir,diagnosis_dir,max_pages=120,headed=True,stop=N
                         except Exception:pass
                 time.sleep(0.25)
         finally:context.close()
-    stats['truncated']=stats['truncated'] or bool(queue) or bool(stop and stop.is_set()) or stats['failed']>0
+    # Any product-like card missing required name/USD/stock data makes the
+    # run unsuitable as a complete inventory snapshot. Keep the visible rows
+    # for diagnosis, but fail closed at the task layer.
+    stats['truncated']= (stats['truncated'] or bool(queue) or bool(stop and stop.is_set())
+                         or stats['failed']>0 or stats['incomplete_cards']>0)
     stats['coverage']='incomplete' if stats['truncated'] else 'visible_catalogues_only'
     if stats['listed']==0:
         stats['truncated']=True
+    stats['diagnostic_report']=write_scan_diagnostic(diag,source,stats,errors,visited_pages,len(products))
     if progress:progress({**stats,'stage':'扫描结束','current_url':'','queued':len(queue)})
     return list(products.values()),errors,stats
 

@@ -14,7 +14,7 @@ from browser_collect import browse_and_collect, validate_link
 from task_runner import execute
 from telegram_sender import protect_token
 
-APP='黑盒铺子 · 库存监控与自动发布系统 v2.0 开发版'
+APP='黑盒铺子 · 库存监控与自动发布系统 v2.1.4 候选版'
 KIND_ZH={'categories':'网站原始类目发现','discover':'选定类目定时采集','refresh':'选定类目库存刷新','capture':'项目定时截图','publish':'Telegram 定时发布'}
 ZH_KIND={v:k for k,v in KIND_ZH.items()}
 
@@ -37,7 +37,7 @@ class Application(tk.Tk):
         header=tk.Frame(self,bg='#ffffff',height=64,highlightbackground='#e0e9f5',highlightthickness=1)
         header.grid(row=0,column=0,columnspan=2,sticky='ew');header.grid_propagate(False)
         tk.Label(header,text='◆  黑盒铺子   BlackBox Shop',fg='#173154',bg='#ffffff',font=('Microsoft YaHei UI',15,'bold')).pack(side='left',padx=22,pady=14)
-        tk.Label(header,text='库存监控与自动发布系统  v2.0 开发版',fg='#64748b',bg='#ffffff',font=('Microsoft YaHei UI',10)).pack(side='left',padx=16)
+        tk.Label(header,text='库存监控与自动发布系统  v2.1.4 候选版',fg='#64748b',bg='#ffffff',font=('Microsoft YaHei UI',10)).pack(side='left',padx=16)
         tk.Label(header,text='●  数据库已就绪  ·  实站采集待验证',fg='#1a8b65',bg='#ffffff',font=('Microsoft YaHei UI',10)).pack(side='right',padx=24)
         self.sidebar=tk.Frame(self,bg='#ffffff',width=184,highlightbackground='#e0e9f5',highlightthickness=1)
         self.sidebar.grid(row=1,column=0,sticky='ns');self.sidebar.grid_propagate(False)
@@ -403,7 +403,10 @@ class Application(tk.Tk):
             self.store.delete_job(ids[0]);self.refresh_jobs()
 
     def _run_automation(self,job):
-        if self.active_job:return messagebox.showwarning('任务正在运行','一次仅允许运行一个采集或发布任务')
+        if self.active_job:
+            if job.get('claim_token'):
+                self.store.release_job_claim(job['id'],job['claim_token'])
+            return messagebox.showwarning('任务正在运行','一次仅允许运行一个采集或发布任务')
         self.active_job=True;self.stop_scan.clear();self.status.set('正在执行 '+KIND_ZH.get(job['kind'],job['kind'])+'...')
         if job['kind'] in ('categories','discover','refresh'):
             self.progress_text.set('准备连接网站 · 正在启动浏览器……')
@@ -432,7 +435,9 @@ class Application(tk.Tk):
         try:
             import time
             if not self.active_job:
-                due=next((dict(j) for j in self.store.jobs() if j['enabled'] and j['next_run']<=time.time()),None)
+                # Claim atomically in SQLite: a second desktop instance must not
+                # launch the same scheduled collection/publish task concurrently.
+                due=self.store.claim_due_job()
                 if due:
                     due['_scheduled']=True
                     self._run_automation(due)
@@ -506,7 +511,7 @@ class Application(tk.Tk):
         stats=self.store.stats();lines=['双站商品监控概览','='*42]
         for name,d in stats.items():lines.append(f'{name:10}  商品数：{d["count"]:>5}   待审核新品：{d["review"]:>5}')
         lines.extend(['','数据库位置：'+str(self.store.path),'截图目录：'+self.settings['screens_dir'],
-                      '备份目录：'+self.settings['backup_dir'],'','版本：v2.0 开发版；商品管理、项目关联、单一销量周期与简洁表格截图规则已更新，实站覆盖率及 TG 端到端仍需验收。'])
+                      '备份目录：'+self.settings['backup_dir'],'','版本：v2.1.4 候选版；商品管理、项目关联、单一销量周期与简洁表格截图规则已更新，实站覆盖率及 TG 端到端仍需验收。'])
         self.overview.configure(state='normal');self.overview.delete('1.0','end');self.overview.insert('1.0','\n'.join(lines));self.overview.configure(state='disabled')
 
     def refresh_goods(self):
@@ -593,8 +598,78 @@ class Application(tk.Tk):
     def create_project(self):
         name=simpledialog.askstring('新建项目','输入项目名称：',parent=self)
         if not name:return
-        try:self.store.add_project(name);self.refresh_projects();self.refresh_jobs()
+        try:
+            self.store.add_project(name)
+            self.refresh_projects();self.refresh_jobs()
+            created=next((p for p in self.store.projects() if p['name']==name.strip()),None)
+            if created:
+                self.project_var.set(f"{created['id']} · {created['name']}")
+                self.refresh_projects()
+                self.open_project_product_picker(created['id'], created['name'])
         except sqlite3.IntegrityError:messagebox.showerror('重复','已存在同名项目')
+
+    def open_project_product_picker(self, project_id, project_name):
+        """Create-project flow: select products with explicit checkbox column."""
+        win=tk.Toplevel(self);win.title(f'选择商品 - {project_name}');win.geometry('1000x680');win.transient(self)
+        win.grab_set()
+        selected=set()
+        search_var=tk.StringVar();source_var=tk.StringVar(value='全部网站')
+        header=ttk.Frame(win,padding=12);header.pack(fill='x')
+        ttk.Label(header,text=f'项目：{project_name}  |  勾选需要加入的商品，可多选').pack(side='left')
+        controls=ttk.Frame(win,padding=(12,0,12,8));controls.pack(fill='x')
+        ttk.Label(controls,text='搜索').pack(side='left')
+        search=ttk.Entry(controls,textvariable=search_var,width=28);search.pack(side='left',padx=6)
+        ttk.Label(controls,text='网站').pack(side='left',padx=(12,3))
+        ttk.Combobox(controls,textvariable=source_var,values=['全部网站','FB1314','CEOACC'],state='readonly',width=12).pack(side='left')
+        ttk.Label(controls,text='点击第一列勾选/取消').pack(side='right')
+        table_frame=ttk.Frame(win,padding=(12,0,12,8));table_frame.pack(fill='both',expand=True)
+        cols=('checked','source','name','type','price','stock','projects')
+        tree=ttk.Treeview(table_frame,columns=cols,show='headings',selectmode='browse')
+        headings={'checked':'选择','source':'网站','name':'商品名称','type':'商品类型','price':'网站原价 USD','stock':'库存','projects':'已有项目'}
+        widths={'checked':55,'source':90,'name':300,'type':100,'price':105,'stock':80,'projects':200}
+        for col in cols:tree.heading(col,text=headings[col]);tree.column(col,width=widths[col],anchor='center' if col!='name' else 'w')
+        sy=ttk.Scrollbar(table_frame,orient='vertical',command=tree.yview);tree.configure(yscrollcommand=sy.set)
+        tree.pack(side='left',fill='both',expand=True);sy.pack(side='right',fill='y')
+        count_var=tk.StringVar(value='已勾选 0 件')
+        footer=ttk.Frame(win,padding=12);footer.pack(fill='x')
+        ttk.Label(footer,textvariable=count_var).pack(side='left')
+        def refresh_rows(*_):
+            tree.delete(*tree.get_children())
+            src='' if source_var.get()=='全部网站' else source_var.get()
+            rows=self.store.products_for_management(source=src,membership='all',search=search_var.get().strip(),limit=50000)
+            for row in rows:
+                if row['status']=='excluded':continue
+                pid=str(row['id'])
+                tree.insert('','end',iid=pid,values=('☑' if pid in selected else '☐',row['source'],row['name'],row['product_type'],row['raw_usd'],row['stock'] if row['stock'] is not None else '未知',row['project_names'] or '—'))
+            count_var.set(f'已勾选 {len(selected)} 件')
+        def toggle(event):
+            if tree.identify('region',event.x,event.y)!='cell':return
+            if tree.identify_column(event.x)!='#1':return
+            iid=tree.identify_row(event.y)
+            if not iid:return
+            if iid in selected:selected.remove(iid)
+            else:selected.add(iid)
+            values=list(tree.item(iid,'values'));values[0]='☑' if iid in selected else '☐';tree.item(iid,values=values)
+            count_var.set(f'已勾选 {len(selected)} 件')
+        tree.bind('<Button-1>',toggle)
+        search_var.trace_add('write',refresh_rows);source_var.trace_add('write',refresh_rows)
+        def select_visible():
+            for iid in tree.get_children():selected.add(iid)
+            refresh_rows()
+        def clear_visible():
+            for iid in tree.get_children():selected.discard(iid)
+            refresh_rows()
+        def save():
+            if not selected:
+                if not messagebox.askyesno('确认','当前没有勾选商品。仍然保留空项目吗？',parent=win):return
+            ids=[int(x) for x in selected]
+            self.store.project_assign(project_id,ids)
+            win.destroy();self.refresh_all();self.status.set(f'项目「{project_name}」已加入 {len(ids)} 件商品')
+        ttk.Button(footer,text='全选当前筛选结果',command=select_visible).pack(side='left',padx=4)
+        ttk.Button(footer,text='取消当前筛选结果',command=clear_visible).pack(side='left',padx=4)
+        ttk.Button(footer,text='确认加入项目',command=save).pack(side='right',padx=4)
+        ttk.Button(footer,text='稍后选择',command=win.destroy).pack(side='right',padx=4)
+        refresh_rows()
 
     def assign_products_to_current_project(self):
         pid=self._project_id();ids=self.goods.selection()
