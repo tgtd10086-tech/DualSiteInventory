@@ -1,5 +1,4 @@
-
-name: Build BlackBoxShop v2.0 Windows installer
+name: Build BlackBoxShop v2.1.4 Windows installer
 
 on:
   workflow_dispatch:
@@ -7,7 +6,6 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v5
@@ -18,16 +16,14 @@ jobs:
           python-version: '3.12'
           architecture: 'x64'
 
-      - name: Locate v2.0 project
+      - name: Locate project
         shell: pwsh
         run: |
           $files = @(Get-ChildItem -Path . -Recurse -Filter build_installer.py -File |
             Where-Object { $_.FullName -match 'dual_site_manager_v2_0' })
-
           if ($files.Count -ne 1) {
-            throw "Expected exactly one v2.0 project, found $($files.Count)"
+            throw "Expected exactly one v2.1.4 project, found $($files.Count)"
           }
-
           $appDir = $files[0].Directory.FullName
           Write-Host "Project: $appDir"
           "APP_DIR=$appDir" >> $env:GITHUB_ENV
@@ -39,7 +35,7 @@ jobs:
           python -m pip install -r "$env:APP_DIR\requirements.txt"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run tests
+      - name: Run unit tests
         shell: pwsh
         run: |
           Push-Location $env:APP_DIR
@@ -53,29 +49,24 @@ jobs:
           python "$env:APP_DIR\build_installer.py"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Verify application bundle
+      - name: Verify PyInstaller and Chromium bundle
         shell: pwsh
         run: |
           $dist = "$env:APP_DIR\dist\DualSiteInventory"
           $exe = Join-Path $dist "DualSiteInventory.exe"
-          $playwright = Join-Path $dist "_internal\playwright"
-
-          if (!(Test-Path $exe -PathType Leaf)) {
-            throw "Application EXE missing: $exe"
+          if (!(Test-Path $exe -PathType Leaf)) { throw "Application EXE missing: $exe" }
+          $browserRoot = Join-Path $dist "_internal\playwright\driver\package\.local-browsers"
+          if (!(Test-Path $browserRoot -PathType Container)) {
+            throw "Bundled Playwright browser directory missing: $browserRoot"
           }
-
-          if (!(Test-Path $playwright -PathType Container)) {
-            throw "Playwright bundle missing: $playwright"
-          }
-
-          $files = @(Get-ChildItem $dist -Recurse -File)
-          if ($files.Count -eq 0) {
-            throw "Application bundle is empty"
-          }
-
-          Write-Host "EXE verified"
-          Write-Host "Playwright verified"
-          Write-Host "Bundle files: $($files.Count)"
+          $browserExe = @(Get-ChildItem $browserRoot -Recurse -File -ErrorAction Stop |
+            Where-Object { $_.Name -in @('chrome.exe','headless_shell.exe') })
+          if ($browserExe.Count -eq 0) { throw "No Chromium executable found under $browserRoot" }
+          $count = @(Get-ChildItem $dist -Recurse -File).Count
+          Write-Host "Application EXE verified"
+          Write-Host "Chromium executables found: $($browserExe.Count)"
+          Write-Host "Bundle file count: $count"
+          if ($count -lt 100) { throw "Unexpectedly small application bundle: $count files" }
 
       - name: Install Inno Setup
         shell: pwsh
@@ -83,105 +74,57 @@ jobs:
           choco install innosetup -y --no-progress
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      
-      - name: Prepare installer files
+      - name: Stage files at short path
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-
+          $ErrorActionPreference = 'Stop'
           $source = "$env:APP_DIR\dist\DualSiteInventory"
-          $stage = "C:\ds\dist\DualSiteInventory"
-
-          Write-Host "Preparing installer staging directory"
-
-          if (!(Test-Path "$source\DualSiteInventory.exe")) {
-            throw "Source EXE missing"
-          }
-
-          New-Item -ItemType Directory -Force -Path "C:\ds\release" | Out-Null
-
-          if (Test-Path "C:\ds\dist") {
-            Remove-Item "C:\ds\dist" -Recurse -Force
-          }
-
+          $stage = 'C:\b\app'
+          New-Item -ItemType Directory -Force -Path 'C:\b\release' | Out-Null
+          if (Test-Path 'C:\b\app') { Remove-Item 'C:\b\app' -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-
-          Write-Host "Copying application files"
-
-          robocopy $source $stage /E /COPY:DAT /R:2 /W:2
+          robocopy $source $stage /E /COPY:DAT /R:2 /W:2 /NFL /NDL
           $copyExit = $LASTEXITCODE
-
           Write-Host "Robocopy exit code: $copyExit"
-
-          if ($copyExit -ge 8) {
-            throw "Application staging copy failed: $copyExit"
-          }
-
-          # Robocopy codes 0-7 are successful.
-          # Reset native exit code so GitHub Actions does not
-          # mistake a successful copy (code 1) for a failed step.
+          if ($copyExit -ge 8) { throw "Robocopy failed: $copyExit" }
           $global:LASTEXITCODE = 0
-
-          Write-Host "Verifying staged application"
-
-          if (!(Test-Path "$stage\DualSiteInventory.exe" -PathType Leaf)) {
-            throw "Staged EXE missing"
-          }
-
-          if (!(Test-Path "$stage\_internal\playwright" -PathType Container)) {
-            throw "Staged Playwright directory missing"
-          }
-
+          if (!(Test-Path "$stage\DualSiteInventory.exe" -PathType Leaf)) { throw 'Staged EXE missing' }
+          $browserRoot = "$stage\_internal\playwright\driver\package\.local-browsers"
+          if (!(Test-Path $browserRoot -PathType Container)) { throw 'Staged Chromium directory missing' }
           $count = @(Get-ChildItem $stage -Recurse -File).Count
-
           Write-Host "Staged files: $count"
-
-          if ($count -ne 1845) {
-            Write-Host "Notice: staged file count differs from previous build."
-          }
-
-          if ($count -eq 0) {
-            throw "Staged application is empty"
-          }
-
+          if ($count -lt 100) { throw "Staged bundle unexpectedly small: $count" }
           $global:LASTEXITCODE = 0
-
-          Write-Host "Installer preparation completed successfully"
           exit 0
-
 
       - name: Compile installer
         shell: pwsh
         run: |
-          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
           $iss = "$env:APP_DIR\installer\DualSite.iss"
-          $output = "C:\ds\release\BlackBoxShop_Setup_v2.0.0.exe"
-
-          if (!(Test-Path $iscc)) {
-            throw "Inno Setup compiler missing"
-          }
-
-          if (!(Test-Path $iss)) {
-            throw "Installer script missing: $iss"
-          }
-
-          & $iscc $iss
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Inno Setup compilation failed: $LASTEXITCODE"
-          }
-
-          if (!(Test-Path $output -PathType Leaf)) {
-            throw "Installer EXE was not generated: $output"
-          }
-
-          $size = (Get-Item $output).Length
-          Write-Host "Installer created: $output"
-          Write-Host "Installer size: $size bytes"
+          $output = 'C:\b\release\BlackBoxShop_Setup_v2.1.4.exe'
+          $log = 'C:\b\release\inno-compile.log'
+          if (!(Test-Path $iscc)) { throw "Inno Setup compiler missing: $iscc" }
+          if (!(Test-Path $iss)) { throw "Installer script missing: $iss" }
+          & $iscc "/O C:\b\release" "/FBlackBoxShop_Setup_v2.1.4" $iss 2>&1 | Tee-Object -FilePath $log
+          $compileExit = $LASTEXITCODE
+          Write-Host "Inno Setup exit code: $compileExit"
+          if ($compileExit -ne 0) { throw "Inno Setup failed; see $log" }
+          if (!(Test-Path $output -PathType Leaf)) { throw "Installer EXE not generated: $output" }
+          Write-Host "Installer size: $((Get-Item $output).Length) bytes"
 
       - name: Upload Windows installer
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
-          name: BlackBoxShop-v2.0-Windows-Setup
-          path: 'C:/ds/release/BlackBoxShop_Setup_v2.0.0.exe'
+          name: BlackBoxShop-v2.1.4-Windows-Setup
+          path: 'C:/b/release/BlackBoxShop_Setup_v2.1.4.exe'
           if-no-files-found: error
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlackBoxShop-v2.1.4-Build-Diagnostics
+          path: |
+            C:/b/release/inno-compile.log
+          if-no-files-found: warn
