@@ -14,7 +14,7 @@ from browser_collect import browse_and_collect, validate_link
 from task_runner import execute
 from telegram_sender import protect_token
 
-APP='黑盒铺子 · 库存监控与自动发布系统 v2.1.4 候选版'
+APP='黑盒铺子 · 库存监控与自动发布系统 v2.2 候选版'
 KIND_ZH={'categories':'网站原始类目发现','discover':'选定类目定时采集','refresh':'选定类目库存刷新','capture':'项目定时截图','publish':'Telegram 定时发布'}
 ZH_KIND={v:k for k,v in KIND_ZH.items()}
 
@@ -37,7 +37,7 @@ class Application(tk.Tk):
         header=tk.Frame(self,bg='#ffffff',height=64,highlightbackground='#e0e9f5',highlightthickness=1)
         header.grid(row=0,column=0,columnspan=2,sticky='ew');header.grid_propagate(False)
         tk.Label(header,text='◆  黑盒铺子   BlackBox Shop',fg='#173154',bg='#ffffff',font=('Microsoft YaHei UI',15,'bold')).pack(side='left',padx=22,pady=14)
-        tk.Label(header,text='库存监控与自动发布系统  v2.1.4 候选版',fg='#64748b',bg='#ffffff',font=('Microsoft YaHei UI',10)).pack(side='left',padx=16)
+        tk.Label(header,text='库存监控与自动发布系统  v2.2 候选版',fg='#64748b',bg='#ffffff',font=('Microsoft YaHei UI',10)).pack(side='left',padx=16)
         tk.Label(header,text='●  数据库已就绪  ·  实站采集待验证',fg='#1a8b65',bg='#ffffff',font=('Microsoft YaHei UI',10)).pack(side='right',padx=24)
         self.sidebar=tk.Frame(self,bg='#ffffff',width=184,highlightbackground='#e0e9f5',highlightthickness=1)
         self.sidebar.grid(row=1,column=0,sticky='ns');self.sidebar.grid_propagate(False)
@@ -47,7 +47,7 @@ class Application(tk.Tk):
         self.tabs=ttk.Notebook(self,style='Hidden.TNotebook');self.tabs.grid(row=1,column=1,sticky='nsew',padx=12,pady=12)
         self.nav_buttons=[]
         self.status=tk.StringVar(value='就绪 · 正式采集之前先验证两个网站的列表字段')
-        self._build_overview();self._build_categories();self._build_full_scan();self._build_goods();self._build_projects();self._build_automation();self._build_capture();self._build_telegram();self._build_reports();self._build_settings();self._build_collect()
+        self._build_overview();self._build_categories();self._build_full_scan();self._build_goods();self._build_projects();self._build_automation();self._build_capture();self._build_reports();self._build_settings();self._build_collect();self._build_logs()
         self.tabs.bind('<<NotebookTabChanged>>',lambda e:self._refresh_nav())
         self.tabs.select(0);self._refresh_nav()
         footer=tk.Label(self,textvariable=self.status,anchor='w',bg='#ffffff',fg='#60718a',font=('Microsoft YaHei UI',10))
@@ -98,7 +98,7 @@ class Application(tk.Tk):
         index=len(self.nav_buttons)
         names={'网站类目管理':'☷  网站类目管理','全站采集':'◎  全站采集','Telegram 发布':'➤  Telegram 发布','统计报表':'▥  统计报表','总览':'⌂  总览首页','商品数据库':'▤  商品数据库','项目与定价':'▣  项目管理',
                '网站采集':'⌕  单链接诊断','截图输出':'▧  截图模板',
-               '全站与自动化':'◷  采集任务管理','系统与文件夹':'⚙  系统设置'}
+               '全站与自动化':'◷  采集任务管理','系统与文件夹':'⚙  系统设置','截图输出':'▧  截图模板管理','采集日志':'≡  采集日志'}
         b=tk.Button(self.sidebar,text=names.get(label,label),font=('Microsoft YaHei UI',11),
                     bg='#ffffff',fg='#31435e',bd=0,anchor='w',padx=20,pady=12,
                     activebackground='#dceaff',command=lambda i=index:self.tabs.select(i),cursor='hand2')
@@ -244,64 +244,81 @@ class Application(tk.Tk):
         ttk.Label(body,text='按钮默认打开可见 Chromium。FB1314 检测「继续 Continue」；CEOACC 检测「不再显示」/「关闭」。CEOACC 暂仅支持含完整 USD JSON-LD 商品结构化数据的页面；否则只保存诊断截图，不会凭空猜库存。',wraplength=960).grid(row=7,column=0,sticky='w',pady=10)
 
     def _build_capture(self):
-        f=self._frame('截图输出');f.rowconfigure(1,weight=0)
-        body=ttk.Frame(f);body.grid(row=1,column=0,sticky='ew',pady=10)
-        ttk.Label(body,text='选择项目（在「项目与定价」创建并添加商品后生成）：').grid(row=0,column=0,sticky='w')
+        f=self._frame('截图输出');f.rowconfigure(1,weight=1)
+        body=ttk.LabelFrame(f,text='截图模板内容',padding=12);body.grid(row=1,column=0,sticky='ew',pady=8)
+        ttk.Label(body,text='选择项目：').grid(row=0,column=0,sticky='w')
         self.render_project=tk.StringVar();self.render_box=ttk.Combobox(body,textvariable=self.render_project,state='readonly',width=35)
         self.render_box.grid(row=0,column=1,sticky='w',padx=10)
-        ttk.Label(body,text='截图标题：').grid(row=1,column=0,sticky='w',pady=8)
+        ttk.Label(body,text='截图标题：').grid(row=1,column=0,sticky='w',pady=6)
         self.render_title=tk.StringVar(value=self.settings['render_title']);ttk.Entry(body,textvariable=self.render_title,width=55).grid(row=1,column=1,sticky='w')
-        ttk.Label(body,text='底部文案：').grid(row=2,column=0,sticky='w',pady=8)
+        ttk.Label(body,text='底部文案：').grid(row=2,column=0,sticky='w',pady=6)
         self.render_footer=tk.StringVar(value=self.settings['render_footer']);ttk.Entry(body,textvariable=self.render_footer,width=55).grid(row=2,column=1,sticky='w')
-        ttk.Label(body,text='截图销量指标（只能选择一项）：').grid(row=3,column=0,sticky='w',pady=8)
+        ttk.Label(body,text='截图销量指标（只能选择一项）：').grid(row=3,column=0,sticky='w',pady=6)
         options=ttk.Frame(body);options.grid(row=3,column=1,sticky='w')
         self.sales_period_var=tk.StringVar(value='24h')
         for key,label in [('24h','本日销量（24小时）'),('7d','本周销量（7天）'),('30d','本月销量（30天）')]:
             ttk.Radiobutton(options,text=label,variable=self.sales_period_var,value=key).pack(side='left',padx=8)
         self.render_box.bind('<<ComboboxSelected>>',lambda e:self._load_sales_periods())
-        ttk.Button(body,text='保存当前项目销量选项',command=self._save_sales_periods).grid(row=4,column=1,sticky='w',pady=8)
-        ttk.Button(body,text='生成项目 PNG 报价图片',command=self.export_png).grid(row=5,column=1,sticky='w',pady=12)
-        ttk.Label(body,text='图片渲染使用 Pillow；自动截图与 Telegram 发布任务请在「全站与自动化」配置。').grid(row=6,column=0,columnspan=2,sticky='w')
+        ttk.Button(body,text='保存当前项目截图模板',command=self._save_sales_periods).grid(row=4,column=1,sticky='w',pady=7)
+        ttk.Button(body,text='生成项目 PNG 预览',command=self.export_png).grid(row=5,column=1,sticky='w',pady=7)
+
+        schedule=ttk.LabelFrame(f,text='模板定时截图与 Telegram 发布（与网站采集任务完全分开）',padding=12)
+        schedule.grid(row=2,column=0,sticky='ew',pady=8)
+        self.tpl_job_kind=tk.StringVar(value='Telegram 定时发布')
+        self.tpl_job_interval=tk.StringVar(value='24')
+        self.tpl_job_start=tk.StringVar(value='')
+        self.tpl_job_target=tk.StringVar(value='')
+        self.tpl_job_caption=tk.StringVar(value='每日商品报价 · 库存价格以最新数据为准')
+        ttk.Label(schedule,text='任务：').grid(row=0,column=0,sticky='w')
+        ttk.Combobox(schedule,textvariable=self.tpl_job_kind,values=['定时生成截图','Telegram 定时发布'],state='readonly',width=18).grid(row=0,column=1,padx=5)
+        ttk.Label(schedule,text='项目模板：').grid(row=0,column=2,sticky='w')
+        self.tpl_project=ttk.Combobox(schedule,textvariable=self.render_project,state='readonly',width=25)
+        self.tpl_project.grid(row=0,column=3,padx=5)
+        ttk.Label(schedule,text='间隔（12–24小时）：').grid(row=1,column=0,sticky='w',pady=5)
+        ttk.Spinbox(schedule,textvariable=self.tpl_job_interval,from_=12,to=24,width=7).grid(row=1,column=1,sticky='w')
+        ttk.Label(schedule,text='首次开始时间（YYYY-MM-DD HH:MM，可留空）：').grid(row=1,column=2,sticky='w')
+        ttk.Entry(schedule,textvariable=self.tpl_job_start,width=22).grid(row=1,column=3,sticky='w')
+        ttk.Label(schedule,text='Telegram 群组/频道 ID：').grid(row=2,column=0,sticky='w')
+        ttk.Entry(schedule,textvariable=self.tpl_job_target,width=24).grid(row=2,column=1,sticky='w',padx=5)
+        ttk.Label(schedule,text='发布文案：').grid(row=2,column=2,sticky='w')
+        ttk.Entry(schedule,textvariable=self.tpl_job_caption,width=34).grid(row=2,column=3,sticky='ew')
+        ttk.Button(schedule,text='保存 Bot Token',command=self.configure_bot).grid(row=3,column=0,pady=7,sticky='w')
+        ttk.Button(schedule,text='创建模板定时任务',command=self.create_capture_job).grid(row=3,column=1,pady=7,sticky='w')
+        self.capture_job_table=self._table_at(f,3,['ID','任务类型','项目模板','循环(小时)','首次开始','下次运行','最近错误'])
+        controls=ttk.Frame(f);controls.grid(row=4,column=0,sticky='w',pady=4)
+        ttk.Button(controls,text='立即执行选中模板任务',command=lambda:self.run_selected_job_from(self.capture_job_table)).pack(side='left',padx=3)
+        ttk.Button(controls,text='删除选中模板任务',command=lambda:self.delete_selected_job_from(self.capture_job_table)).pack(side='left',padx=3)
+        ttk.Button(controls,text='刷新模板任务',command=self.refresh_jobs).pack(side='left',padx=3)
+        ttk.Label(f,text='模板任务只负责生成截图及 Telegram 发布；网站扫描请前往「采集任务管理」。').grid(row=5,column=0,sticky='w')
 
     def _build_automation(self):
         f=self._frame('全站与自动化')
         top=ttk.Frame(f);top.grid(row=0,column=0,sticky='ew',pady=5)
-        ttk.Label(top,text='按已启用的原始网站类目读取商品，不读取被长期排除的类目；首次请先发现类目并选择。',wraplength=900).pack(anchor='w')
+        ttk.Label(top,text='这里只管理网站采集，不包含截图或 Telegram 发布。按已启用的网站原始类目扫描。',wraplength=900).pack(anchor='w')
         btns=ttk.Frame(top);btns.pack(anchor='w',pady=6)
         ttk.Button(btns,text='立即扫描已选类目 FB1314',command=lambda:self.run_manual('discover','FB1314')).pack(side='left',padx=3)
         ttk.Button(btns,text='立即扫描已选类目 CEOACC',command=lambda:self.run_manual('discover','CEOACC')).pack(side='left',padx=3)
         ttk.Button(btns,text='刷新 FB1314 已选类目',command=lambda:self.run_manual('refresh','FB1314')).pack(side='left',padx=3)
         ttk.Button(btns,text='刷新 CEOACC 已选类目',command=lambda:self.run_manual('refresh','CEOACC')).pack(side='left',padx=3)
-        form=ttk.LabelFrame(f,text='新增定时任务',padding=8);form.grid(row=1,column=0,sticky='ew',pady=6)
+        form=ttk.LabelFrame(f,text='新增循环采集任务',padding=8);form.grid(row=1,column=0,sticky='ew',pady=6)
         self.job_kind=tk.StringVar(value=KIND_ZH['discover']);self.job_source=tk.StringVar(value='FB1314')
-        self.job_interval=tk.StringVar(value='6');self.job_daily=tk.StringVar();self.job_target=tk.StringVar();self.job_caption=tk.StringVar(value='每日商品报价 · 库存价格以最新数据为准')
-        self.job_project=tk.StringVar()
+        self.job_interval=tk.StringVar(value='6');self.job_start=tk.StringVar(value='')
         ttk.Label(form,text='任务类型').grid(row=0,column=0,sticky='w')
-        ttk.Combobox(form,textvariable=self.job_kind,values=list(KIND_ZH.values()),state='readonly',width=22).grid(row=0,column=1,padx=5)
+        ttk.Combobox(form,textvariable=self.job_kind,values=[KIND_ZH[k] for k in ('categories','discover','refresh')],state='readonly',width=22).grid(row=0,column=1,padx=5)
         ttk.Label(form,text='网站').grid(row=0,column=2)
         ttk.Combobox(form,textvariable=self.job_source,values=['FB1314','CEOACC'],state='readonly',width=11).grid(row=0,column=3,padx=5)
-        ttk.Label(form,text='循环间隔(小时)').grid(row=0,column=4)
-        ttk.Spinbox(form,textvariable=self.job_interval,from_=1,to=24,increment=1,width=7).grid(row=0,column=5,padx=5)
-        ttk.Label(form,text='固定每日时间（可选，格式 08:00,20:00；填入后优先于循环小时）').grid(row=5,column=0,columnspan=3,sticky='w')
-        ttk.Entry(form,textvariable=self.job_daily,width=26).grid(row=5,column=3,columnspan=3,sticky='w')
-        ttk.Label(form,text='发布项目').grid(row=1,column=0,sticky='w',pady=6)
-        self.auto_project=ttk.Combobox(form,textvariable=self.job_project,state='readonly',width=25)
-        self.auto_project.grid(row=1,column=1,columnspan=2,sticky='w')
-        ttk.Label(form,text='Telegram 群组/频道ID').grid(row=1,column=3,sticky='e')
-        ttk.Entry(form,textvariable=self.job_target,width=27).grid(row=1,column=4,columnspan=2,sticky='w')
-        ttk.Label(form,text='图片文案').grid(row=2,column=0,sticky='w')
-        ttk.Entry(form,textvariable=self.job_caption,width=74).grid(row=2,column=1,columnspan=5,sticky='ew')
-        ttk.Button(form,text='保存任务',command=self.create_job).grid(row=3,column=1,sticky='w',pady=9)
-        ttk.Button(form,text='保存 Telegram Bot Token',command=self.configure_bot).grid(row=3,column=2,columnspan=3,sticky='w')
-        ttk.Label(form,text='发布须先将 Bot 加入目标群组/频道并授予发消息权限。此版本使用 Bot API，不支持个人账号登录。',wraplength=890).grid(row=4,column=0,columnspan=6,sticky='w')
+        ttk.Label(form,text='循环间隔（1–24小时）').grid(row=0,column=4)
+        ttk.Spinbox(form,textvariable=self.job_interval,from_=1,to=24,width=7).grid(row=0,column=5,padx=5)
+        ttk.Label(form,text='首次开始时间（YYYY-MM-DD HH:MM，可留空）').grid(row=1,column=0,columnspan=3,sticky='w',pady=6)
+        ttk.Entry(form,textvariable=self.job_start,width=24).grid(row=1,column=3,sticky='w')
+        ttk.Button(form,text='创建采集循环任务',command=self.create_job).grid(row=1,column=4,columnspan=2,sticky='w',padx=5)
         self._add_scan_progress_panel(f,row=5)
         f.rowconfigure(2,weight=1)
-        self.job_table=self._table_at(f,2,['ID','任务类型','网站/项目','循环(小时)','目标','下次运行','最近错误'])
+        self.job_table=self._table_at(f,2,['ID','任务类型','网站','循环(小时)','下次运行','最近错误'])
         ctl=ttk.Frame(f);ctl.grid(row=3,column=0,sticky='w',pady=4)
-        ttk.Button(ctl,text='立即执行选中任务',command=self.run_selected_job).pack(side='left',padx=3)
-        ttk.Button(ctl,text='删除选中任务',command=self.delete_selected_job).pack(side='left',padx=3)
-        ttk.Button(ctl,text='刷新列表',command=self.refresh_jobs).pack(side='left',padx=3)
-        ttk.Label(ctl,text='已选类目可设置每2小时、每6小时或任意整数小时循环执行。').pack(side='left',padx=12)
+        ttk.Button(ctl,text='立即执行选中采集任务',command=lambda:self.run_selected_job_from(self.job_table)).pack(side='left',padx=3)
+        ttk.Button(ctl,text='删除选中采集任务',command=lambda:self.delete_selected_job_from(self.job_table)).pack(side='left',padx=3)
+        ttk.Button(ctl,text='刷新采集任务',command=self.refresh_jobs).pack(side='left',padx=3)
 
     def _add_scan_progress_panel(self,parent,row):
         # Unknown total pages: intentionally indeterminate, never show fictional percentages.
@@ -353,16 +370,28 @@ class Application(tk.Tk):
         return t
 
     def refresh_jobs(self):
-        if not hasattr(self,'job_table'):return
         import datetime as dt
-        self.job_table.delete(*self.job_table.get_children())
-        values=[f'{p["id"]} · {p["name"]}' for p in self.store.projects()]
-        self.auto_project['values']=values
-        if values and self.job_project.get() not in values:self.job_project.set(values[0])
-        for j in self.store.jobs():
-            scope=j['source'] or ('项目 '+str(j['project_id']))
-            when=dt.datetime.fromtimestamp(j['next_run']).strftime('%m-%d %H:%M')
-            self.job_table.insert('','end',iid=str(j['id']),values=(j['id'],KIND_ZH.get(j['kind'],j['kind']),scope,('每天 '+j['daily_times'] if j['daily_times'] else str(round(j['interval_minutes']/60,2))),j['target'],when,j['last_error'][:80]))
+        jobs=list(self.store.jobs())
+        if hasattr(self,'job_table'):
+            self.job_table.delete(*self.job_table.get_children())
+            for j in jobs:
+                if j['kind'] not in ('categories','discover','refresh'): continue
+                when=dt.datetime.fromtimestamp(j['next_run']).strftime('%Y-%m-%d %H:%M')
+                self.job_table.insert('','end',iid=str(j['id']),values=(j['id'],KIND_ZH.get(j['kind'],j['kind']),j['source'],
+                    round(j['interval_minutes']/60,2),when,j['last_error'][:100]))
+        if hasattr(self,'capture_job_table'):
+            self.capture_job_table.delete(*self.capture_job_table.get_children())
+            for j in jobs:
+                if j['kind'] not in ('capture','publish'): continue
+                when=dt.datetime.fromtimestamp(j['next_run']).strftime('%Y-%m-%d %H:%M')
+                project=next((p['name'] for p in self.store.projects() if p['id']==j['project_id']),'项目已删除')
+                start=j['start_at'] if 'start_at' in j.keys() else ''
+                self.capture_job_table.insert('','end',iid=str(j['id']),values=(j['id'],KIND_ZH.get(j['kind'],j['kind']),project,
+                    round(j['interval_minutes']/60,2),start,when,j['last_error'][:80]))
+        if hasattr(self,'auto_project'):
+            values=[f'{p["id"]} · {p["name"]}' for p in self.store.projects()]
+            self.auto_project['values']=values
+            if values and self.job_project.get() not in values:self.job_project.set(values[0])
 
     def configure_bot(self):
         token=simpledialog.askstring('Telegram Bot Token','请输入 BotFather 提供的 Bot Token（将以 Windows 用户加密方式保存）：',show='*',parent=self)
@@ -374,17 +403,49 @@ class Application(tk.Tk):
 
     def create_job(self):
         try:
-            kind=ZH_KIND[self.job_kind.get()];source=self.job_source.get() if kind not in ('capture','publish') else ''
-            pid=self._project_id(self.job_project.get()) if kind in ('capture','publish') else None
-            if kind in ('capture','publish') and not pid:raise ValueError('截图/发布任务需要选择一个项目')
-            if kind=='publish' and not self.job_target.get().strip():raise ValueError('发布任务需要目标频道/群组')
-            hours=float(self.job_interval.get())
-            if kind in ('discover','refresh','categories') and not 1 <= hours <= 24:raise ValueError('网站采集/类目发现周期必须为 1–24 小时')
-            if kind in ('capture','publish') and not 12 <= hours <= 24:raise ValueError('截图/Telegram 发布周期必须为 12–24 小时')
-            self.store.add_job(KIND_ZH[kind]+' '+(source or str(pid)),kind,round(hours*60),source,pid,
-              self.job_target.get().strip() if kind=='publish' else '',self.job_caption.get() if kind=='publish' else '',self.job_daily.get())
-            self.refresh_jobs();self.status.set('自动任务已添加')
-        except Exception as exc:messagebox.showerror('创建任务失败',str(exc))
+            kind=ZH_KIND[self.job_kind.get()]
+            if kind not in ('categories','discover','refresh'):
+                raise ValueError('采集任务中心只允许创建网站采集任务')
+            source=self.job_source.get()
+            hours=int(self.job_interval.get())
+            if not 1 <= hours <= 24:raise ValueError('采集循环周期必须为 1–24 小时')
+            start_at=self.job_start.get().strip()
+            self.store.add_job(KIND_ZH[kind]+' '+source,kind,hours*60,source,start_at=start_at)
+            self.refresh_jobs();self.status.set('采集循环任务已添加')
+        except Exception as exc:messagebox.showerror('创建采集任务失败',str(exc))
+
+    def create_capture_job(self):
+        try:
+            kind='publish' if self.tpl_job_kind.get()=='Telegram 定时发布' else 'capture'
+            pid=self._project_id(self.render_project.get())
+            if not pid:raise ValueError('请先选择项目模板')
+            hours=int(self.tpl_job_interval.get())
+            if not 12 <= hours <= 24:raise ValueError('截图模板任务周期必须为 12–24 小时')
+            target=self.tpl_job_target.get().strip() if kind=='publish' else ''
+            if kind=='publish' and not target:raise ValueError('Telegram 发布任务需要群组/频道 ID')
+            start_at=self.tpl_job_start.get().strip()
+            caption=self.tpl_job_caption.get().strip() if kind=='publish' else ''
+            self.store.add_job(KIND_ZH[kind]+' '+self.render_project.get(),kind,hours*60,'',pid,target,caption,start_at=start_at)
+            self.refresh_jobs();self.status.set('截图模板定时任务已添加')
+        except Exception as exc:messagebox.showerror('创建模板任务失败',str(exc))
+
+    def run_selected_job_from(self,table):
+        ids=table.selection()
+        if not ids:return messagebox.showinfo('提示','请先选择一条任务')
+        job=next((dict(j) for j in self.store.jobs() if str(j['id'])==ids[0]),None)
+        if job:self._run_automation(job)
+
+    def delete_selected_job_from(self,table):
+        ids=table.selection()
+        if not ids:return
+        if messagebox.askyesno('确认','删除选中的定时任务？'):
+            self.store.delete_job(ids[0]);self.refresh_jobs()
+
+    def run_selected_job(self):
+        return self.run_selected_job_from(self.job_table)
+
+    def delete_selected_job(self):
+        return self.delete_selected_job_from(self.job_table)
 
     def run_manual(self,kind,source):
         job={'kind':kind,'source':source,'project_id':None,'target':'','caption':''}
@@ -426,7 +487,7 @@ class Application(tk.Tk):
         if job['kind'] in ('categories','discover','refresh'):
             self.progress_text.set('采集已结束' if not self.stop_scan.is_set() else '用户已请求停止，任务结束')
         if job.get('id'):self.store.mark_job(job['id'],error)
-        self.refresh_all();self.refresh_jobs();self.status.set(result)
+        self.refresh_all();self.refresh_jobs();self.refresh_logs();self.status.set(result)
         if not job.get('_scheduled'):
             if error:messagebox.showerror('自动任务失败',result)
             else:messagebox.showinfo('任务结果',result)
@@ -459,6 +520,54 @@ class Application(tk.Tk):
         for index in range(self.tabs.index('end')):
             if self.tabs.tab(index,'text')==label:return index
         return 0
+
+    def _build_logs(self):
+        f=self._frame('采集日志')
+        ttk.Label(f,text='采集执行日志与诊断',font=('Microsoft YaHei UI',18,'bold')).grid(row=0,column=0,sticky='w',pady=8)
+        bar=ttk.Frame(f);bar.grid(row=1,column=0,sticky='ew',pady=5)
+        self.log_source=tk.StringVar(value='全部网站')
+        ttk.Combobox(bar,textvariable=self.log_source,values=['全部网站','FB1314','CEOACC'],state='readonly',width=14).pack(side='left',padx=4)
+        ttk.Button(bar,text='刷新日志',command=self.refresh_logs).pack(side='left',padx=4)
+        ttk.Button(bar,text='打开日志目录',command=self.open_logs_folder).pack(side='left',padx=4)
+        self.log_text=tk.Text(f,height=25,font=('Consolas',9),wrap='none',bg='#ffffff',fg='#233c59',relief='flat')
+        self.log_text.grid(row=2,column=0,sticky='nsew',pady=6)
+        f.rowconfigure(2,weight=1)
+        ttk.Label(f,text='日志按任务、网站、时间记录；诊断 JSON 保存在 Documents\\DualSiteInventory\\Diagnostics 对应网站目录（无法写入时使用备用目录）。',wraplength=900).grid(row=3,column=0,sticky='w')
+
+    def _logs_candidates(self):
+        import tempfile
+        return [Path(self.settings['data_dir']).parent/'Logs'/'collection',
+                Path.home()/'Documents'/'DualSiteInventory'/'Logs'/'collection',
+                Path(os.getenv('LOCALAPPDATA',str(Path.home()/'AppData'/'Local')))/'DualSiteInventory'/'Logs'/'collection',
+                Path(tempfile.gettempdir())/'DualSiteInventory'/'Logs'/'collection']
+
+    def _logs_root(self):
+        for folder in self._logs_candidates():
+            if folder.exists(): return folder
+        return self._logs_candidates()[0]
+
+    def refresh_logs(self):
+        if not hasattr(self,'log_text'):return
+        folders=[p for p in self._logs_candidates() if p.exists()]
+        source=self.log_source.get() if hasattr(self,'log_source') else '全部网站'
+        files=sorted({p for folder in folders for p in folder.glob('*.jsonl')})
+        lines=[]
+        for path in files:
+            if source!='全部网站' and not path.name.startswith(source.lower()+'_'):continue
+            try:
+                rows=path.read_text(encoding='utf-8').splitlines()
+                lines.extend(rows[-500:])
+            except OSError as exc:
+                lines.append(json.dumps({'level':'ERROR','file':str(path),'error':str(exc)},ensure_ascii=False))
+        self.log_text.delete('1.0','end')
+        self.log_text.insert('1.0','\\n'.join(lines[-1500:]) if lines else '暂无采集日志。执行一次采集任务后，这里会记录任务开始、页面加载、商品识别、异常和任务结束。')
+
+    def open_logs_folder(self):
+        import os
+        folder=self._logs_root()
+        folder.mkdir(parents=True,exist_ok=True)
+        try:os.startfile(str(folder))
+        except Exception as exc:messagebox.showerror('打开日志目录失败',str(exc))
 
     def _build_reports(self):
         f=self._frame('统计报表')
@@ -505,13 +614,13 @@ class Application(tk.Tk):
         ttk.Label(body,text='安全说明：数据库正在运行时不直接复制 SQLite 主文件；使用 SQLite 在线备份。切换数据库目录会先复制有效快照，重启后生效。').grid(row=8,column=0,columnspan=3,sticky='w',pady=12)
 
     def refresh_all(self):
-        self.refresh_goods();self.refresh_projects();self.refresh_categories();self.refresh_overview();self.refresh_jobs();self.refresh_reports()
+        self.refresh_goods();self.refresh_projects();self.refresh_categories();self.refresh_overview();self.refresh_jobs();self.refresh_reports();self.refresh_logs()
 
     def refresh_overview(self):
         stats=self.store.stats();lines=['双站商品监控概览','='*42]
         for name,d in stats.items():lines.append(f'{name:10}  商品数：{d["count"]:>5}   待审核新品：{d["review"]:>5}')
         lines.extend(['','数据库位置：'+str(self.store.path),'截图目录：'+self.settings['screens_dir'],
-                      '备份目录：'+self.settings['backup_dir'],'','版本：v2.1.4 候选版；商品管理、项目关联、单一销量周期与简洁表格截图规则已更新，实站覆盖率及 TG 端到端仍需验收。'])
+                      '备份目录：'+self.settings['backup_dir'],'','版本：v2.2 候选版；商品管理、项目关联、单一销量周期与简洁表格截图规则已更新，实站覆盖率及 TG 端到端仍需验收。'])
         self.overview.configure(state='normal');self.overview.delete('1.0','end');self.overview.insert('1.0','\n'.join(lines));self.overview.configure(state='disabled')
 
     def refresh_goods(self):

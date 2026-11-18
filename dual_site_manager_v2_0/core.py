@@ -91,7 +91,7 @@ class Store:
             'products': [('display_name','TEXT'),('display_usd','TEXT'),('product_type',"TEXT NOT NULL DEFAULT '其他'")],
             'project_products': [('custom_name','TEXT'),('include_in_capture','INTEGER NOT NULL DEFAULT 1')],
             'projects': [('sales_periods',"TEXT NOT NULL DEFAULT '24h'"),('sort_mode',"TEXT NOT NULL DEFAULT 'manual'"),('include_out_of_stock','INTEGER NOT NULL DEFAULT 1')],
-            'automation_jobs': [('daily_times',"TEXT NOT NULL DEFAULT ''"),('claim_token','TEXT'),('claimed_until','REAL')],
+            'automation_jobs': [('daily_times',"TEXT NOT NULL DEFAULT ''"),('claim_token','TEXT'),('claimed_until','REAL'),('start_at',"TEXT NOT NULL DEFAULT ''")],
             'publish_log': [('job_id','INTEGER'),('batch_key','TEXT'),('page_index','INTEGER'),('message_id','TEXT')]
         }.items():
             existing={r['name'] for r in self.conn.execute(f'PRAGMA table_info({table})')}
@@ -346,14 +346,26 @@ class Store:
         if not candidates:raise ValueError('至少设置一个固定执行时间')
         return min(candidates)
 
-    def add_job(self,name,kind,interval_minutes,source='',project_id=None,target='',caption='',daily_times=''):
+    def add_job(self,name,kind,interval_minutes,source='',project_id=None,target='',caption='',daily_times='',start_at=''):
         if kind not in ('categories','discover','refresh','capture','publish'): raise ValueError('未知任务类型')
         if int(interval_minutes)<5:raise ValueError('任务间隔必须至少 5 分钟')
+        if int(interval_minutes)>1440:raise ValueError('任务间隔不能超过 24 小时')
         import time
-        when=self.next_daily_run(daily_times) if daily_times.strip() else time.time()+int(interval_minutes)*60
+        from datetime import datetime
+        start_at=str(start_at or '').strip()
+        if start_at:
+            try:
+                parsed=datetime.fromisoformat(start_at)
+                when=parsed.astimezone().timestamp() if parsed.tzinfo else parsed.timestamp()
+            except ValueError as exc:
+                raise ValueError('开始时间格式应为 YYYY-MM-DD HH:MM') from exc
+            if when <= time.time():
+                raise ValueError('自定义开始时间必须晚于当前时间')
+        else:
+            when=self.next_daily_run(daily_times) if daily_times.strip() else time.time()+int(interval_minutes)*60
         with self.conn:
-            cur=self.conn.execute('INSERT INTO automation_jobs(name,kind,source,project_id,interval_minutes,target,caption,next_run,daily_times) VALUES(?,?,?,?,?,?,?,?,?)',
-                (name,kind,source,project_id,int(interval_minutes),target,caption,when,daily_times.strip()))
+            cur=self.conn.execute('INSERT INTO automation_jobs(name,kind,source,project_id,interval_minutes,target,caption,next_run,daily_times,start_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                (name,kind,source,project_id,int(interval_minutes),target,caption,when,daily_times.strip(),start_at))
         return cur.lastrowid
 
     def jobs(self):

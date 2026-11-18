@@ -183,40 +183,68 @@ def should_finish_scroll(no_new_rounds, at_bottom, end_hint, any_valid, rounds):
 
 
 
-def wait_for_catalogue_signal(page, timeout_ms=9000):
-    """Wait adaptively for visible catalogue evidence or an explicit empty/end hint.
+def wait_for_catalogue_signal(page, timeout_ms=18000, source=None):
+    """Wait for a real, stable catalogue render instead of racing category navigation.
 
-    Avoids a fixed long sleep on fast pages while giving client-rendered catalogues
-    time to hydrate. This does not treat an empty page as a successful scan.
+    CEOACC receives a longer hydration window and requires the visible listing
+    signature to remain stable across several samples. We do not click through
+    individual product details.
     """
+    timeout_ms = max(timeout_ms, 18000 if source == 'CEOACC' else 9000)
     signal = r"""() => {
       const text=(document.body?.innerText||'');
-      const money=/(?:USD\s*\$?\s*|\$\s*)\d+(?:\.\d{1,4})?/i.test(text);
-      const stock=/(?:库存|现货|存货|剩余|stock|inventory)\s*[:：]?\s*\d/i.test(text);
+      const money=/(?:USD\\s*\\$?\\s*|\\$\\s*)\\d+(?:\\.\\d{1,4})?/i.test(text);
+      const stock=/(?:库存|现货|存货|剩余|stock|inventory)\\s*[:：]?\\s*\\d/i.test(text);
       const rows=document.querySelectorAll('tbody tr,[data-product-id],[data-goods-id],.product-card,.goods-item,.product-item').length;
       const end=/(已经到底|没有更多商品|没有更多了|已加载全部|no more (?:items|products)|end of (?:the )?list)/i.test(text);
-      return (money && stock && rows>0) || end;
+      return {ready:(money && stock && rows>0) || end, rows, tail:text.slice(-1200)};
     }"""
     try:
-        page.wait_for_function(signal, timeout=timeout_ms)
+        page.wait_for_function(f"""() => {{
+          const x=({signal})();
+          if (!x.ready) {{ window.__bbStable = 0; window.__bbSig = ''; return false; }}
+          const sig=String(x.rows)+'|'+x.tail.slice(-350);
+          if (window.__bbSig === sig) window.__bbStable=(window.__bbStable||0)+1;
+          else {{ window.__bbSig=sig; window.__bbStable=0; }}
+          return window.__bbStable >= 2;
+        }}""", timeout=timeout_ms)
         return True
     except Exception:
         return False
 
 
 def write_scan_diagnostic(diag_dir, source, stats, errors, visited_pages, product_count):
-    """Persist a compact, privacy-conscious scan report; never stores cookies or full HTML."""
+    """Persist compact diagnostic JSON; fall back to Documents if configured path is unavailable."""
     from datetime import datetime
+    import os, tempfile
     stamp=datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-    path=Path(diag_dir)/f'scan_report_{stamp}.json'
     report={
         'source':source, 'created_at':datetime.now().astimezone().isoformat(timespec='seconds'),
         'stats':stats, 'product_count':int(product_count),
         'visited_pages':visited_pages, 'errors':list(errors[:100]),
         'note':'Coverage describes visible public catalogue pages only; it is not a guarantee of private or login-restricted inventory.'
     }
-    path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-    return str(path)
+    local_app = Path(os.getenv('LOCALAPPDATA', str(Path.home() / 'AppData' / 'Local')))
+    candidates=[Path(diag_dir),
+                Path.home()/'Documents'/'DualSiteInventory'/'Diagnostics'/source.lower(),
+                local_app/'DualSiteInventory'/'Diagnostics'/source.lower(),
+                Path(tempfile.gettempdir())/'DualSiteInventory'/'Diagnostics'/source.lower()]
+    last_error=None
+    for folder in candidates:
+        try:
+            folder.mkdir(parents=True,exist_ok=True)
+            path=folder/f'scan_report_{stamp}.json'
+            path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+            # Also append a concise machine-readable index for easy discovery.
+            with (folder/'scan_history.jsonl').open('a',encoding='utf-8') as fp:
+                fp.write(json.dumps({'created_at':report['created_at'],'report':str(path),
+                                     'product_count':int(product_count),'failed':stats.get('failed',0),
+                                     'incomplete_cards':stats.get('incomplete_cards',0)},ensure_ascii=False)+'\\n')
+            return str(path)
+        except OSError as exc:
+            last_error=exc
+    raise OSError(f'无法保存采集诊断报告；尝试目录：{diag_dir}；备用目录：{candidates[-1]}；原因：{last_error}')
+
 
 def scroll_catalogue(page, source, url, max_scrolls=90, delay_ms=650, progress=None, stop=None,
                      time_budget_s=120):
@@ -342,7 +370,9 @@ def scan_site(source,profiles_dir,diagnosis_dir,max_pages=120,headed=True,stop=N
                     dismiss_site_popup(page,source)
                     # Adaptive wait for client-rendered lists; do not rely on networkidle
                     # because storefronts may keep analytics/polling requests open.
-                    wait_for_catalogue_signal(page, timeout_ms=9000)
+                    ready=wait_for_catalogue_signal(page, timeout_ms=(22000 if source=='CEOACC' else 12000), source=source)
+                    if not ready:
+                        raise RuntimeError('等待商品列表稳定超时；页面未出现稳定的商品名称/价格/库存结构')
                     if urlparse(page.url).hostname not in ALLOWED[source]:raise RuntimeError('跳转到非本站页面')
                     title=page.title()
                     if re.search(r'captcha|cloudflare|verify you are human|安全验证',title,re.I):
@@ -360,7 +390,9 @@ def scan_site(source,profiles_dir,diagnosis_dir,max_pages=120,headed=True,stop=N
                                       'listed':len(products)+event.get('listed',0),
                                       'incomplete_cards':stats['incomplete_cards']+event.get('incomplete_cards',0),
                                       'current_url':url,'queued':len(queue)})
-                    items,result=scroll_catalogue(page,source,page.url,max_scrolls,scroll_delay_ms,scroll_report,stop)
+                    effective_delay = max(scroll_delay_ms, 1250) if source == 'CEOACC' else scroll_delay_ms
+                    items,result=scroll_catalogue(page,source,page.url,max_scrolls,effective_delay,scroll_report,stop,
+                                                  time_budget_s=(240 if source=='CEOACC' else 150))
                     stats['visited']+=1
                     stats['scroll_rounds']+=result['scroll_rounds']
                     stats['incomplete_cards']+=result['incomplete_cards']
@@ -403,6 +435,12 @@ def scan_site(source,profiles_dir,diagnosis_dir,max_pages=120,headed=True,stop=N
                     if progress:progress({**stats,'stage':'本页读取完成','current_url':url,'queued':len(queue),'pagination_found':len(pages)})
                 except Exception as exc:
                     stats['failed']+=1;errors.append(f'{url}: {exc}')
+                    try:
+                        visited_pages.append({'url':url,'title':page.title(),'error':str(exc),
+                                              'selector_count':page.locator(CARD_SELECTORS).count(),
+                                              'fallback_count':len(page.evaluate(PROXIMITY_JS))})
+                    except Exception:
+                        visited_pages.append({'url':url,'error':str(exc)})
                     if stats['failed']<=12:
                         try:page.screenshot(path=str(diag/f'scan_{int(time.time()*1000)}.png'),timeout=5000)
                         except Exception:pass

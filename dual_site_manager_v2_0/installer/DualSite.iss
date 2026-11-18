@@ -1,5 +1,5 @@
 #define MyAppName "BlackBoxShop"
-#define MyAppVersion "2.1.4"
+#define MyAppVersion "2.2.0"
 #define MyAppExeName "DualSiteInventory.exe"
 
 [Setup]
@@ -9,7 +9,7 @@ AppVersion={#MyAppVersion}
 DefaultDirName={localappdata}\Programs\BlackBoxShop
 DefaultGroupName={#MyAppName}
 OutputDir=C:\b\release
-OutputBaseFilename=BlackBoxShop_Setup_v2.1.4
+OutputBaseFilename=BlackBoxShop_Setup_v2.2.0
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

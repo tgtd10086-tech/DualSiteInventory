@@ -1,5 +1,7 @@
 """Execute tasks on independent SQLite connection, safe for Tk background worker."""
 from pathlib import Path
+import json
+from datetime import datetime
 from core import Store
 from browser_collect import browse_and_collect
 from site_discovery import scan_site, discover_site_categories
@@ -20,7 +22,36 @@ def scan_result_complete(stats, stop=None):
 def execute(job,db_path,settings,progress=None,stop=None):
     store=Store(db_path)
     root=Path(settings['data_dir']).parent
-    source=job['source']
+    source=job.get('source','')
+    import os, tempfile
+    log_candidates=[root/'Logs'/'collection',
+                    Path.home()/'Documents'/'DualSiteInventory'/'Logs'/'collection',
+                    Path(os.getenv('LOCALAPPDATA',str(Path.home()/'AppData'/'Local')))/'DualSiteInventory'/'Logs'/'collection',
+                    Path(tempfile.gettempdir())/'DualSiteInventory'/'Logs'/'collection']
+    log_dir=None
+    for candidate in log_candidates:
+        try:
+            candidate.mkdir(parents=True,exist_ok=True)
+            probe=candidate/'.write_test'
+            probe.write_text('ok',encoding='utf-8');probe.unlink()
+            log_dir=candidate;break
+        except OSError:
+            continue
+    if log_dir is None:
+        raise OSError('无法创建采集日志目录：已尝试数据库目录、Documents、LocalAppData 和临时目录')
+    log_path=log_dir/f"{source.lower() or 'system'}_{datetime.now().strftime('%Y%m%d')}.jsonl" 
+    def write_log(level,event,detail=None):
+        row={'time':datetime.now().astimezone().isoformat(timespec='seconds'),
+             'level':level,'event':event,'job_id':job.get('id'),
+             'job_name':job.get('name'),'source':source,'kind':job.get('kind'),
+             'detail':detail or {}}
+        with log_path.open('a',encoding='utf-8') as fp:
+            fp.write(json.dumps(row,ensure_ascii=False,default=str)+'\\n')
+    def logged_progress(data):
+        write_log('INFO',data.get('stage','progress'),{k:v for k,v in data.items() if k not in ('stage',)})
+        if progress: progress(data)
+    write_log('INFO','task_started',{'diagnostics_dir':str(root/'Diagnostics'/source.lower()),
+                                    'log_file':str(log_path)})
     try:
         if job['kind']=='categories':
             cats=discover_site_categories(source,root/'BrowserProfiles',root/'Diagnostics',
@@ -34,10 +65,11 @@ def execute(job,db_path,settings,progress=None,stop=None):
             items,failed,stats=scan_site(source,root/'BrowserProfiles',root/'Diagnostics',
                 max_pages=int(settings.get('scan_limit',1200)),
                 headed=bool(settings.get('visible_browser',True)),
-                selected_categories=selected,progress=progress,stop=stop)
+                selected_categories=selected,progress=logged_progress,stop=stop)
             complete=scan_result_complete(stats,stop)
             written=store.ingest_category_scan(source,items,selected,complete,len(failed),
                                                 '；'.join(failed[:12]))
+            write_log('INFO','scan_finished',{'stats':stats,'failed_pages':failed,'report':stats.get('diagnostic_report','')})
             if not complete:
                 # Surface incomplete scans as failed scheduled runs so the job history
                 # records the error and operators do not mistake it for a successful cycle.
@@ -80,4 +112,11 @@ def execute(job,db_path,settings,progress=None,stop=None):
                     raise RuntimeError(f'第 {i+1}/{len(paths)} 张图片发送失败；此前成功页已记录，重试时会跳过成功页：{exc}') from exc
             return f'发布完成：共 {len(paths)} 页；本次发送 {len(messages)} 页；跳过已成功页 {len(skipped)} 页；消息ID {messages}'
         raise ValueError('未知任务类型')
-    finally:store.close()
+    except Exception as exc:
+        try: write_log('ERROR','task_failed',{'error':str(exc),'log_file':str(log_path)})
+        except Exception: pass
+        raise RuntimeError(f"{exc}（采集日志：{log_path}）") from exc
+    finally:
+        try: write_log('INFO','task_finished',{'status':'stopped' if stop and stop.is_set() else 'closed'})
+        except Exception: pass
+        store.close()
