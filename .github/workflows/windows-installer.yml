@@ -1,0 +1,193 @@
+
+name: Build BlackBoxShop v2.2.0 Windows installer
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      - name: Locate v2.2.0 project
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path . -Recurse -Filter build_installer.py -File |
+            Where-Object { $_.FullName -match 'dual_site_manager_v2_0' })
+
+          if ($files.Count -ne 1) {
+            throw "Expected exactly one v2.2.0 project, found $($files.Count)"
+          }
+
+          $appDir = $files[0].Directory.FullName
+          Write-Host "Project: $appDir"
+          "APP_DIR=$appDir" >> $env:GITHUB_ENV
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r "$env:APP_DIR\requirements.txt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          Push-Location $env:APP_DIR
+          try {
+            python -m unittest discover -s tests -v
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unit tests failed"
+            }
+          }
+          finally {
+            Pop-Location
+          }
+
+      - name: Build Windows application
+        shell: pwsh
+        run: |
+          python "$env:APP_DIR\build_installer.py"
+          if ($LASTEXITCODE -ne 0) {
+            throw "PyInstaller build failed"
+          }
+
+      - name: Verify application bundle
+        shell: pwsh
+        run: |
+          $dist = "$env:APP_DIR\dist\DualSiteInventory"
+
+          if (!(Test-Path "$dist\DualSiteInventory.exe")) {
+            throw "Application EXE missing"
+          }
+
+          if (!(Test-Path "$dist\_internal\playwright")) {
+            throw "Playwright directory missing"
+          }
+
+          $count = @(Get-ChildItem $dist -Recurse -File).Count
+          Write-Host "Bundle files: $count"
+
+          if ($count -eq 0) {
+            throw "Application bundle is empty"
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup installation failed"
+          }
+
+      - name: Prepare installer files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $source = "$env:APP_DIR\dist\DualSiteInventory"
+          $stage = 'C:\b\app'
+          $release = 'C:\b\release'
+
+          New-Item -ItemType Directory -Force -Path 'C:\b' | Out-Null
+
+          if (Test-Path $stage) {
+            Remove-Item $stage -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Force -Path $stage,$release | Out-Null
+
+          robocopy $source $stage /E /COPY:DAT /R:2 /W:2
+          $copyExit = $LASTEXITCODE
+
+          if ($copyExit -ge 8) {
+            throw "Robocopy failed: $copyExit"
+          }
+
+          $global:LASTEXITCODE = 0
+
+          if (!(Test-Path "$stage\DualSiteInventory.exe")) {
+            throw "Staged EXE missing"
+          }
+
+          if (!(Test-Path "$stage\_internal\playwright")) {
+            throw "Staged Playwright directory missing"
+          }
+
+          Write-Host "Staging completed successfully"
+
+      - name: Verify installer configuration
+        shell: pwsh
+        run: |
+          $iss = "$env:APP_DIR\installer\DualSite.iss"
+
+          if (!(Test-Path $iss)) {
+            throw "DualSite.iss missing"
+          }
+
+          $content = Get-Content $iss -Raw
+
+          if ($content -notmatch 'C:\\b\\app') {
+            throw "ISS source path must use C:\b\app"
+          }
+
+          if ($content -notmatch 'C:\\b\\release') {
+            throw "ISS OutputDir must use C:\b\release"
+          }
+
+          Write-Host "Installer configuration verified"
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          $iss = "$env:APP_DIR\installer\DualSite.iss"
+          $output = 'C:\b\release\BlackBoxShop_Setup_v2.2.0.exe'
+          $log = 'C:\b\release\inno-compile.log'
+
+          if (!(Test-Path $iscc)) {
+            throw "Inno Setup compiler missing"
+          }
+
+          New-Item -ItemType Directory -Force -Path 'C:\b\release' | Out-Null
+
+          & $iscc $iss 2>&1 | Tee-Object -FilePath $log
+          $compileExit = $LASTEXITCODE
+
+          Write-Host "Inno Setup exit code: $compileExit"
+
+          if ($compileExit -ne 0) {
+            throw "Installer compilation failed"
+          }
+
+          if (!(Test-Path $output)) {
+            throw "Installer EXE missing"
+          }
+
+          Write-Host "Installer generated successfully"
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlackBoxShop-v2.2.0-Windows-Setup
+          path: C:/b/release/BlackBoxShop_Setup_v2.2.0.exe
+          if-no-files-found: error
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlackBoxShop-v2.2.0-Diagnostics
+          path: C:/b/release/inno-compile.log
+          if-no-files-found: warn
