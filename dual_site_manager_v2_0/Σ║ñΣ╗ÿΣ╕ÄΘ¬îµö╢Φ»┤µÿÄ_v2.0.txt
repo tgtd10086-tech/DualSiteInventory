@@ -1,0 +1,33 @@
+黑盒铺子 v2.0 开发版交付说明
+
+一、本次代码改造
+1. 商品归类状态由项目关联关系计算，待归类/已归类/已排除可独立查看。
+2. 一个商品可加入多个项目；移出项目不会删除数据库商品。
+3. 项目内支持独立展示名称、售价、截图显示状态和排序模式。
+4. 商品管理支持来源、类型、归类状态、名称、价格、库存及销量排序。
+5. 截图销量周期改为单选；图片为蓝白简洁五列（含序号）表格，不展示网站原价。
+6. 项目没有有效销售价时，截图生成会失败关闭，不会回退网站原价。
+7. 网站采集任务界面限制 1–24 小时，截图/发布任务界面限制 12–24 小时。
+8. 旧数据库通过增量迁移，不要求删除原数据库。
+
+二、本地测试
+在 dual_site_manager_v2_0 目录执行：
+  python -m pip install -r requirements.txt
+  python -m unittest discover -s tests -v
+  python app.py
+
+三、GitHub Actions
+仓库根目录需要同时包含：
+  .github/workflows/windows-installer.yml
+  dual_site_manager_v2_0/ 目录
+然后打开 GitHub -> Actions -> Build BlackBoxShop v2.0 Windows installer -> Run workflow。
+成功后下载 artifact：BlackBoxShop-v2.0-Windows-Setup。
+
+四、实站验收提醒
+本地 46 项单元测试通过不等于 FB1314 / CEOACC 已完成全站覆盖验证。需在用户本机网络环境分别发现类目、扫描已启用类目、对照网页列表数量，检查 CEOACC 的名称/价格/库存字段，再做至少两轮库存快照比较。Telegram 需要真实 Bot Token、目标群组权限及小范围测试。
+
+五、升级前备份
+退出旧软件后备份：
+  Documents\DualSiteInventory\Database\inventory.sqlite3
+  %APPDATA%\DualSiteInventory\settings.json
+以及截图和诊断目录。
